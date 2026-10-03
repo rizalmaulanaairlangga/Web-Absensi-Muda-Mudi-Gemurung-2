@@ -1,0 +1,12 @@
+{
+  "name": "Absensi Muda-Mudi Gemurung 2",
+  "short_name": "Gemurung 2",
+  "description": "Absensi pengajian rutin dan khusus Muda-Mudi Gemurung 2",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F8FAFC",
+  "theme_color": "#4EA8DE",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
