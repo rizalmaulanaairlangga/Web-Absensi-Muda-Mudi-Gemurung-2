@@ -8,7 +8,11 @@ export const useApp = () => useContext(AppCtx);
 function uid(prefix) { return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`; }
 
 export function AppProvider({ children }) {
-  const [theme, setTheme] = useState(() => localStorage.getItem('gm-theme') || 'system');
+  const [theme, setThemeState] = useState(() => {
+    const saved = localStorage.getItem('gm-theme');
+    if (saved === 'light' || saved === 'dark') return saved;
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
   const [online, setOnline] = useState(() => navigator.onLine);
   const [syncState, setSyncState] = useState('Tersinkron');
   const [toasts, setToasts] = useState([]);
@@ -24,19 +28,19 @@ export function AppProvider({ children }) {
     setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 3200);
   }, []);
 
+  const setTheme = useCallback((mode) => {
+    if (mode !== 'light' && mode !== 'dark') return;
+    setThemeState(mode);
+  }, []);
+  const toggleTheme = useCallback(() => {
+    setThemeState((p) => (p === 'dark' ? 'light' : 'dark'));
+  }, []);
+
   useEffect(() => {
     const root = document.documentElement;
-    const apply = () => {
-      const sysDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      const mode = theme === 'system' ? (sysDark ? 'dark' : 'light') : theme;
-      root.setAttribute('data-theme', mode);
-      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', mode === 'dark' ? '#0B1220' : '#4EA8DE');
-    };
-    apply();
-    localStorage.setItem('gm-theme', theme);
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    mq.addEventListener?.('change', apply);
-    return () => mq.removeEventListener?.('change', apply);
+    root.setAttribute('data-theme', theme);
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0B1220' : '#4EA8DE');
+    try { localStorage.setItem('gm-theme', theme); } catch { /* abaikan */ }
   }, [theme]);
 
   useEffect(() => {
@@ -133,6 +137,6 @@ export function AppProvider({ children }) {
     }
   }
 
-  const value = { theme, setTheme, online, syncState, toasts, toast, session, account, isGuest, loadingAuth, queue, enqueue, trySync, loginGuest, logout, supabaseReady: isSupabaseConfigured };
+  const value = { theme, setTheme, toggleTheme, online, syncState, toasts, toast, session, account, isGuest, loadingAuth, queue, enqueue, trySync, loginGuest, logout, supabaseReady: isSupabaseConfigured };
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
 }

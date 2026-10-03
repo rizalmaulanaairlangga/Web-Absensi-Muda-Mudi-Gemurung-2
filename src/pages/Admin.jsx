@@ -3,11 +3,19 @@ import { useApp } from '../lib/store.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { idbGet, idbSet } from '../lib/idb.js';
 import { DEFAULT_ABSENCE, DEFAULT_STATUS, DEFAULT_HADITH, DEFAULT_FREE, DEFAULT_SPEAKERS, DEFAULT_SPECIAL_TYPES } from '../lib/seed.js';
-import { Modal, Empty } from '../components/ui.jsx';
+import { Modal, Empty, PlusIcon, TrashIcon, PencilIcon, ClockIcon } from '../components/ui.jsx';
+
+const DAYS = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+
+function timeRange(start, end) {
+  const s = String(start || '').slice(0, 5);
+  const e = String(end || '').slice(0, 5);
+  return e && e !== s ? `${s} – ${e}` : s;
+}
 
 function useMaster(account, key, defaults, table) {
   const [items, setItems] = useState([]);
-  const { isGuest, supabaseReady, toast } = useApp();
+  const { isGuest, supabaseReady } = useApp();
   useEffect(() => {
     (async () => {
       if (!account) return;
@@ -20,7 +28,7 @@ function useMaster(account, key, defaults, table) {
       const { data } = await supabase.from(table).select('*').eq('account_id', account.id).order('name');
       setItems(data || []);
     })();
-  }, [account?.id]);
+  }, [account?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   return [items, setItems];
 }
 
@@ -30,24 +38,26 @@ function Crud({ title, desc, items, onAdd, onEdit, onDelete, placeholder }) {
   const [val, setVal] = useState('');
   const filtered = items.filter((i) => (i.name || '').toLowerCase().includes(q.toLowerCase()));
   return (
-    <div className="card">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-        <div><h3 className="card-title">{title}</h3><p className="card-desc">{desc}</p></div>
-        <button className="btn btn-primary" onClick={() => { setModal('add'); setVal(''); }}>+ Tambah</button>
+    <div className="admin-sub">
+      <div className="admin-sub-head">
+        <div><h3 className="card-title" style={{ fontSize: 15 }}>{title}</h3><p className="card-desc" style={{ marginBottom: 0 }}>{desc}</p></div>
+        <button className="btn btn-primary" style={{ minHeight: 40, padding: '8px 12px', fontSize: 13 }} onClick={() => { setModal('add'); setVal(''); }}><PlusIcon /> Tambah</button>
       </div>
       <input className="input search" placeholder={placeholder || 'Cari...'} value={q} onChange={(e) => setQ(e.target.value)} aria-label={`Cari ${title}`} />
-      <div className="admin-list">
-        {filtered.length === 0 && <Empty title="Belum ada data" desc="Tambah data pertama." />}
-        {filtered.map((it) => (
-          <div className="admin-item" key={it.id}>
-            <span>{it.name}</span>
-            <span style={{ display: 'flex', gap: 6 }}>
-              <button className="icon-btn" aria-label={`Edit ${it.name}`} onClick={() => { setModal(it.id); setVal(it.name); }}>✎</button>
-              <button className="icon-btn" aria-label={`Hapus ${it.name}`} onClick={() => onDelete(it)}>🗑</button>
-            </span>
-          </div>
-        ))}
-      </div>
+      {filtered.length === 0 && <p className="hint">Belum ada data.</p>}
+      {filtered.length > 0 && (
+        <div className="master-rows">
+          {filtered.map((it) => (
+            <div className="master-row" key={it.id}>
+              <span>{it.name}</span>
+              <span className="master-actions">
+                <button className="icon-btn edit" aria-label={`Edit ${it.name}`} onClick={() => { setModal(it.id); setVal(it.name); }}><PencilIcon /></button>
+                <button className="icon-btn danger" aria-label={`Hapus ${it.name}`} onClick={() => onDelete(it)}><TrashIcon /></button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
       {modal && (
         <Modal title={modal === 'add' ? `Tambah ${title}` : `Edit ${title}`} onClose={() => setModal(null)}
           foot={<><button className="btn" onClick={() => setModal(null)}>Batal</button><button className="btn btn-primary" onClick={() => { if (!val.trim()) return; modal === 'add' ? onAdd(val.trim()) : onEdit(modal, val.trim()); setModal(null); }}>Simpan</button></>}>
@@ -90,132 +100,167 @@ export default function Admin() {
         supabase.from('app_settings').select('*').eq('account_id', account.id).maybeSingle(),
       ]);
       setMembers(m.data || []);
-      setSchedules((s.data || []).map((x) => ({ id: x.id, day_of_week: x.day_of_week, event_time: String(x.event_time).slice(0, 5), active: x.active })));
+      setSchedules((s.data || []).map((x) => ({ id: x.id, day_of_week: x.day_of_week, event_time: String(x.event_time).slice(0, 5), end_time: x.end_time ? String(x.end_time).slice(0, 5) : null, active: x.active })));
       if (st.data) setLockHours(st.data.lock_duration_hours);
     })();
-  }, [account?.id]);
+  }, [account?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function persistLocal(patch) {
     const local = (await idbGet('guest-data', null)) || {};
-    const next = { ...local, ...patch };
-    await idbSet('guest-data', next);
+    await idbSet('guest-data', { ...local, ...patch });
   }
 
   async function addMaster(table, setter, name, localKey) {
     if (isGuest || !supabaseReady) {
       const item = { id: `x_${Date.now()}`, name };
       setter((p) => [...p, item]);
-      const local = await idbGet('guest-data', null);
-      if (local) {
-        const map = { absenceTypes: 'absence', statuses: 'status', hadith: 'hadith', free: 'free', speakers: 'speaker', specialTypes: 'special' };
-        const inv = Object.entries(map).find(([, v]) => v === localKey)?.[0];
-        if (inv) { local[inv] = [...(local[inv] || []), item]; await idbSet('guest-data', local); }
-      }
       return;
     }
     const { data, error } = await supabase.from(table).insert({ account_id: account.id, name }).select().single();
     if (error) { toast('Gagal menambah. Mungkin nama sudah ada.'); return; }
     setter((p) => [...p, data]);
   }
+  async function editMaster(table, setter, id, name) {
+    if (isGuest || !supabaseReady) { setter((p) => p.map((x) => x.id === id ? { ...x, name } : x)); return; }
+    await supabase.from(table).update({ name }).eq('id', id);
+    setter((p) => p.map((x) => x.id === id ? { ...x, name } : x));
+  }
   async function delMaster(table, setter, it, warn) {
-    if (!confirm(`${warn} "${it.name}" secara permanen? Data historis tetap ditampilkan memakai snapshot.`)) return;
+    if (!window.confirm(`${warn} "${it.name}" secara permanen? Data yang sudah tersimpan tetap ditampilkan memakai snapshot.`)) return;
     if (isGuest || !supabaseReady) { setter((p) => p.filter((x) => x.id !== it.id)); return; }
     await supabase.from(table).delete().eq('id', it.id);
     setter((p) => p.filter((x) => x.id !== it.id));
+    toast(`"${it.name}" dihapus permanen.`);
+  }
+
+  async function addSchedule(dow, start, end) {
+    if (!start || !end) { toast('Isi jam mulai dan jam selesai.'); return; }
+    if (end <= start) { toast('Jam selesai harus lebih besar dari jam mulai.'); return; }
+    if (isGuest || !supabaseReady) {
+      const ns = [...schedules, { id: `sch_${Date.now()}`, day_of_week: dow, event_time: start, end_time: end, active: true }];
+      setSchedules(ns); persistLocal({ schedules: ns });
+    } else {
+      const { data, error } = await supabase.from('recurring_schedules').insert({ account_id: account.id, day_of_week: dow, event_time: start, end_time: end }).select().single();
+      if (error) { toast('Gagal menambah jadwal.'); return; }
+      setSchedules((p) => [...p, { id: data.id, day_of_week: data.day_of_week, event_time: String(data.event_time).slice(0, 5), end_time: data.end_time ? String(data.end_time).slice(0, 5) : null, active: true }]);
+    }
+    toast('Jadwal rutin ditambahkan. Berlaku untuk jadwal ke depan.');
+  }
+  async function delSchedule(s) {
+    if (!window.confirm(`Hapus jadwal ${DAYS[s.day_of_week]} ${timeRange(s.event_time, s.end_time)}? Histori yang sudah tersimpan tidak ikut berubah.`)) return;
+    if (isGuest || !supabaseReady) { const ns = schedules.filter((x) => x.id !== s.id); setSchedules(ns); persistLocal({ schedules: ns }); }
+    else { await supabase.from('recurring_schedules').delete().eq('id', s.id); setSchedules((p) => p.filter((x) => x.id !== s.id)); }
+  }
+  async function saveLock(v) {
+    setLockHours(v);
+    if (isGuest || !supabaseReady) persistLocal({ lockHours: v });
+    else await supabase.from('app_settings').upsert({ account_id: account.id, lock_duration_hours: v });
   }
 
   if (!account) return <div className="card"><Empty title="Perlu masuk" desc="Masuk untuk mengelola data." /></div>;
 
-  const dayOpts = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+  const filteredMembers = members.filter((m) => (`${m.full_name} ${m.nickname}`).toLowerCase().includes(q.toLowerCase()));
 
   return (
     <div>
       <div className="card">
         <h2 className="card-title">Admin</h2>
-        <p className="card-desc">Kelola anggota, jadwal, dan data master. Perubahan jadwal hanya berlaku ke depan.</p>
-        <div className="row cols-2">
-          <label className="field"><span>Batas perubahan (jam)</span>
-            <input className="input" type="number" min="1" max="168" value={lockHours} onChange={async (e) => {
-              const v = Number(e.target.value); setLockHours(v);
-              if (isGuest || !supabaseReady) persistLocal({ lockHours: v });
-              else await supabase.from('app_settings').upsert({ account_id: account.id, lock_duration_hours: v });
-            }} />
-          </label>
-          <label className="field"><span>Cari anggota</span><input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari anggota..." /></label>
-        </div>
+        <p className="card-desc">Kelola jadwal, anggota, dan data master pengajian.</p>
       </div>
 
-      <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 className="card-title">Anggota</h3>
-          <button className="btn btn-primary" onClick={() => { setMemberForm({ full_name: '', nickname: '', gender: 'MALE', status: '', active: true }); setMemberModal('add'); }}>+ Tambah</button>
-        </div>
-        <div className="admin-list" style={{ marginTop: 10 }}>
-          {members.filter((m) => (m.full_name + m.nickname).toLowerCase().includes(q.toLowerCase())).map((m) => (
-            <div className="admin-item" key={m.id}>
-              <div>
-                <div><strong>{m.full_name}</strong> <span className="hint">({m.nickname})</span></div>
-                <div className="hint">{m.gender === 'MALE' ? 'Laki-laki' : 'Perempuan'} • {m.member_statuses?.name || m.status || '-'}</div>
-              </div>
-              <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <span className={`badge ${m.active ? 'green' : 'gray'}`}>{m.active ? 'Aktif' : 'Nonaktif'}</span>
-                <button className="icon-btn" aria-label={`Edit ${m.nickname}`} onClick={() => { setMemberForm({ full_name: m.full_name, nickname: m.nickname, gender: m.gender, status: m.member_statuses?.name || m.status || '', active: m.active, id: m.id }); setMemberModal(m.id); }}>✎</button>
-              </span>
+      <section className="admin-group" aria-label="Pengajian">
+        <h3 className="admin-group-head">PENGAJIAN</h3>
+        <div className="admin-grid cols-2">
+          <div className="admin-sub">
+            <div className="admin-sub-head">
+              <div><h3 className="card-title" style={{ fontSize: 15 }}>Jadwal Rutin</h3><p className="card-desc" style={{ marginBottom: 0 }}>Hari dan jam boleh berbeda tiap jadwal.</p></div>
             </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="card">
-        <h3 className="card-title">Jadwal Rutin</h3>
-        <p className="card-desc">Contoh: Rabu 19:30, Jumat 19:30. Jam tiap hari boleh berbeda.</p>
-        {schedules.map((s) => (
-          <div className="admin-item" key={s.id}>
-            <span>{dayOpts[s.day_of_week]} • {s.event_time}</span>
-            <button className="icon-btn" aria-label="Hapus jadwal" onClick={async () => {
-              if (!confirm('Hapus jadwal rutin ini? Histori occurrence lama tidak ikut berubah.')) return;
-              if (isGuest || !supabaseReady) { const ns = schedules.filter((x) => x.id !== s.id); setSchedules(ns); persistLocal({ schedules: ns }); }
-              else { await supabase.from('recurring_schedules').delete().eq('id', s.id); setSchedules((p) => p.filter((x) => x.id !== s.id)); }
-            }}>🗑</button>
+            {schedules.length === 0 && <p className="hint">Belum ada jadwal rutin.</p>}
+            {schedules.map((s) => (
+              <div className="schedule-row" key={s.id}>
+                <div>
+                  <div className="schedule-day">{DAYS[s.day_of_week]}</div>
+                  <div className="schedule-time"><ClockIcon size={14} /> {timeRange(s.event_time, s.end_time)}</div>
+                </div>
+                <button className="icon-btn danger" aria-label={`Hapus jadwal ${DAYS[s.day_of_week]}`} onClick={() => delSchedule(s)}><TrashIcon /></button>
+              </div>
+            ))}
+            <AddSchedule onAdd={addSchedule} />
+            <label className="field" style={{ marginTop: 12, marginBottom: 0 }}>
+              <span>Batas perubahan absensi (jam, dihitung dari jam mulai jadwal)</span>
+              <input className="input" type="number" min="1" max="168" value={lockHours} onChange={(e) => saveLock(Number(e.target.value))} />
+            </label>
           </div>
-        ))}
-        <AddSchedule onAdd={async (dow, time) => {
-          if (isGuest || !supabaseReady) { const ns = [...schedules, { id: `sch_${Date.now()}`, day_of_week: dow, event_time: time, active: true }]; setSchedules(ns); persistLocal({ schedules: ns }); }
-          else { const { data } = await supabase.from('recurring_schedules').insert({ account_id: account.id, day_of_week: dow, event_time: time }).select().single(); if (data) setSchedules((p) => [...p, { id: data.id, day_of_week: data.day_of_week, event_time: String(data.event_time).slice(0, 5), active: true }]); }
-        }} />
-      </div>
+          <Crud title="Jenis Izin" desc="Dipakai pada dropdown izin form absensi." items={absence}
+            onAdd={(n) => addMaster('absence_types', setAbsence, n)}
+            onEdit={(id, n) => editMaster('absence_types', setAbsence, id, n)}
+            onDelete={(it) => delMaster('absence_types', setAbsence, it, 'Hapus jenis izin')} />
+        </div>
+        <div className="admin-grid" style={{ marginTop: 12 }}>
+          <Crud title="Pengajian Khusus" desc="Master jenis kegiatan khusus." items={specials}
+            onAdd={(n) => addMaster('special_event_types', setSpecials, n)}
+            onEdit={(id, n) => editMaster('special_event_types', setSpecials, id, n)}
+            onDelete={(it) => delMaster('special_event_types', setSpecials, it, 'Hapus jenis khusus')} />
+        </div>
+      </section>
 
-      <Crud title="Jenis Izin" desc="Dipakai pada dropdown izin form absensi." items={absence}
-        onAdd={(n) => addMaster('absence_types', setAbsence, n, 'absence')}
-        onEdit={async (id, n) => { if (isGuest || !supabaseReady) setAbsence((p) => p.map((x) => x.id === id ? { ...x, name: n } : x)); else { await supabase.from('absence_types').update({ name: n }).eq('id', id); setAbsence((p) => p.map((x) => x.id === id ? { ...x, name: n } : x)); } }}
-        onDelete={(it) => delMaster('absence_types', setAbsence, it, 'Hapus jenis izin')} />
-      <Crud title="Status Anggota" desc="Contoh: Sekolah, Kuliah, Bekerja." items={statuses}
-        onAdd={(n) => addMaster('member_statuses', setStatuses, n, 'status')}
-        onEdit={async (id, n) => { if (isGuest || !supabaseReady) setStatuses((p) => p.map((x) => x.id === id ? { ...x, name: n } : x)); else { await supabase.from('member_statuses').update({ name: n }).eq('id', id); setStatuses((p) => p.map((x) => x.id === id ? { ...x, name: n } : x)); } }}
-        onDelete={(it) => delMaster('member_statuses', setStatuses, it, 'Hapus status')} />
-      <Crud title="Materi Hadist" desc="Master hadist untuk form materi." items={hadith}
-        onAdd={(n) => addMaster('hadith_materials', setHadith, n, 'hadith')}
-        onEdit={async (id, n) => { if (isGuest || !supabaseReady) setHadith((p) => p.map((x) => x.id === id ? { ...x, name: n } : x)); else { await supabase.from('hadith_materials').update({ name: n }).eq('id', id); setHadith((p) => p.map((x) => x.id === id ? { ...x, name: n } : x)); } }}
-        onDelete={(it) => delMaster('hadith_materials', setHadith, it, 'Hapus hadist')} />
-      <Crud title="Kegiatan Bebas" desc="Olahraga, ASAD, keakraban, dan lainnya." items={free}
-        onAdd={(n) => addMaster('free_activity_types', setFree, n, 'free')}
-        onEdit={async (id, n) => { if (isGuest || !supabaseReady) setFree((p) => p.map((x) => x.id === id ? { ...x, name: n } : x)); else { await supabase.from('free_activity_types').update({ name: n }).eq('id', id); setFree((p) => p.map((x) => x.id === id ? { ...x, name: n } : x)); } }}
-        onDelete={(it) => delMaster('free_activity_types', setFree, it, 'Hapus kegiatan')} />
-      <Crud title="Pemateri" desc="Dipakai untuk Quran, Hadist, Nasehat, dan kegiatan." items={speakers}
-        onAdd={(n) => addMaster('speakers', setSpeakers, n, 'speaker')}
-        onEdit={async (id, n) => { if (isGuest || !supabaseReady) setSpeakers((p) => p.map((x) => x.id === id ? { ...x, name: n } : x)); else { await supabase.from('speakers').update({ name: n }).eq('id', id); setSpeakers((p) => p.map((x) => x.id === id ? { ...x, name: n } : x)); } }}
-        onDelete={(it) => delMaster('speakers', setSpeakers, it, 'Hapus pemateri')} />
-      <Crud title="Jenis Pengajian Khusus" desc="Master kegiatan khusus." items={specials}
-        onAdd={(n) => addMaster('special_event_types', setSpecials, n, 'special')}
-        onEdit={async (id, n) => { if (isGuest || !supabaseReady) setSpecials((p) => p.map((x) => x.id === id ? { ...x, name: n } : x)); else { await supabase.from('special_event_types').update({ name: n }).eq('id', id); setSpecials((p) => p.map((x) => x.id === id ? { ...x, name: n } : x)); } }}
-        onDelete={(it) => delMaster('special_event_types', setSpecials, it, 'Hapus jenis khusus')} />
+      <section className="admin-group" aria-label="Anggota">
+        <h3 className="admin-group-head">ANGGOTA</h3>
+        <div className="admin-sub">
+          <div className="admin-sub-head">
+            <div><h3 className="card-title" style={{ fontSize: 15 }}>Data Anggota</h3><p className="card-desc" style={{ marginBottom: 0 }}>{members.filter((m) => m.active).length} aktif dari {members.length} anggota.</p></div>
+            <button className="btn btn-primary" style={{ minHeight: 40, padding: '8px 12px', fontSize: 13 }} onClick={() => { setMemberForm({ full_name: '', nickname: '', gender: 'MALE', status: '', active: true }); setMemberModal('add'); }}><PlusIcon /> Tambah</button>
+          </div>
+          <input className="input search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari anggota..." aria-label="Cari anggota" />
+          <div className="admin-list">
+            {filteredMembers.length === 0 && <p className="hint">Belum ada anggota yang cocok.</p>}
+            {filteredMembers.map((m) => (
+              <div className="admin-item" key={m.id}>
+                <div>
+                  <div><strong>{m.full_name}</strong> <span className="hint">({m.nickname})</span></div>
+                  <div className="hint">{m.gender === 'MALE' ? 'Laki-laki' : 'Perempuan'} • {m.member_statuses?.name || m.status || '-'}</div>
+                </div>
+                <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <span className={`badge ${m.active ? 'green' : 'gray'}`}>{m.active ? 'Aktif' : 'Nonaktif'}</span>
+                  <button className="icon-btn edit" aria-label={`Edit ${m.nickname}`} onClick={() => { setMemberForm({ full_name: m.full_name, nickname: m.nickname, gender: m.gender, status: m.member_statuses?.name || m.status || '', active: m.active, id: m.id }); setMemberModal(m.id); }}><PencilIcon /></button>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="admin-grid" style={{ marginTop: 12 }}>
+          <Crud title="Status Anggota" desc="Contoh: Sekolah, Kuliah, Bekerja." items={statuses}
+            onAdd={(n) => addMaster('member_statuses', setStatuses, n)}
+            onEdit={(id, n) => editMaster('member_statuses', setStatuses, id, n)}
+            onDelete={(it) => delMaster('member_statuses', setStatuses, it, 'Hapus status')} />
+        </div>
+      </section>
+
+      <section className="admin-group" aria-label="Materi">
+        <h3 className="admin-group-head">MATERI</h3>
+        <div className="admin-grid cols-2">
+          <Crud title="Hadist" desc="Master data hadist untuk form materi." items={hadith}
+            onAdd={(n) => addMaster('hadith_materials', setHadith, n)}
+            onEdit={(id, n) => editMaster('hadith_materials', setHadith, id, n)}
+            onDelete={(it) => delMaster('hadith_materials', setHadith, it, 'Hapus hadist')} />
+          <Crud title="Kegiatan Bebas" desc="Olahraga, ASAD, keakraban, dan lainnya." items={free}
+            onAdd={(n) => addMaster('free_activity_types', setFree, n)}
+            onEdit={(id, n) => editMaster('free_activity_types', setFree, id, n)}
+            onDelete={(it) => delMaster('free_activity_types', setFree, it, 'Hapus kegiatan')} />
+        </div>
+        <div className="admin-grid" style={{ marginTop: 12 }}>
+          <Crud title="Pemateri" desc="Dipakai untuk Quran, Hadist, Nasehat, dan kegiatan." items={speakers}
+            onAdd={(n) => addMaster('speakers', setSpeakers, n)}
+            onEdit={(id, n) => editMaster('speakers', setSpeakers, id, n)}
+            onDelete={(it) => delMaster('speakers', setSpeakers, it, 'Hapus pemateri')} />
+        </div>
+      </section>
 
       {memberModal && (
         <Modal title={memberModal === 'add' ? 'Tambah anggota' : 'Edit anggota'} onClose={() => setMemberModal(null)}
           foot={<><button className="btn" onClick={() => setMemberModal(null)}>Batal</button><button className="btn btn-primary" onClick={async () => {
             if (!memberForm.full_name.trim() || !memberForm.nickname.trim()) { toast('Nama lengkap dan panggilan wajib diisi.'); return; }
             if (isGuest || !supabaseReady) {
-              const local = await idbGet('guest-data', null);
               if (memberModal === 'add') {
                 const item = { id: `m_${Date.now()}`, full_name: memberForm.full_name, nickname: memberForm.nickname, gender: memberForm.gender, status: memberForm.status, active: memberForm.active, joined_at: new Date().toISOString().slice(0, 10) };
                 const ns = [...members, item]; setMembers(ns); persistLocal({ members: ns });
@@ -256,16 +301,20 @@ export default function Admin() {
 
 function AddSchedule({ onAdd }) {
   const [dow, setDow] = useState(3);
-  const [time, setTime] = useState('19:30');
+  const [start, setStart] = useState('19:30');
+  const [end, setEnd] = useState('21:30');
   return (
-    <div className="row cols-3" style={{ marginTop: 10 }}>
-      <label className="field"><span>Hari</span>
-        <select className="input" value={dow} onChange={(e) => setDow(Number(e.target.value))}>
-          {['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'].map((d, i) => <option key={d} value={i}>{d}</option>)}
-        </select>
-      </label>
-      <label className="field"><span>Jam</span><input className="input" type="time" value={time} onChange={(e) => setTime(e.target.value)} /></label>
-      <div style={{ display: 'flex', alignItems: 'flex-end' }}><button className="btn" onClick={() => onAdd(dow, time)}>Tambah jadwal</button></div>
+    <div style={{ marginTop: 10, borderTop: '1px solid var(--border-subtle)', paddingTop: 12 }}>
+      <div className="row cols-3">
+        <label className="field"><span>Hari</span>
+          <select className="input" value={dow} onChange={(e) => setDow(Number(e.target.value))}>
+            {DAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
+          </select>
+        </label>
+        <label className="field"><span>Jam mulai</span><input className="input" type="time" value={start} onChange={(e) => setStart(e.target.value)} /></label>
+        <label className="field"><span>Jam selesai</span><input className="input" type="time" value={end} onChange={(e) => setEnd(e.target.value)} /></label>
+      </div>
+      <button className="btn btn-primary btn-block" onClick={() => onAdd(dow, start, end)}><PlusIcon /> Tambah Jadwal</button>
     </div>
   );
 }
