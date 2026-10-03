@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Navigate } from 'react-router-dom';
 import { useApp } from '../lib/store.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 
 export default function Login() {
-  const { loginGuest, toast, supabaseReady } = useApp();
+  const { loginGuest, toast, supabaseReady, account, loadingAuth } = useApp();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -29,6 +29,8 @@ export default function Login() {
     nav('/');
   }
 
+  if (!loadingAuth && account) return <Navigate to="/" replace />;
+
   return (
     <div className="login-wrap">
       <div className="card login-card">
@@ -50,7 +52,6 @@ export default function Login() {
         <button className="btn btn-block" onClick={() => setShowGuestInfo(true)} type="button">Coba sebagai Tamu</button>
         {!supabaseReady && <p className="hint" style={{ marginTop: 10 }}>Mode backend belum aktif di perangkat ini. Mode tamu tetap bisa dicoba karena memakai data lokal.</p>}
         <p className="hint" style={{ marginTop: 12 }}>Tidak ada pendaftaran publik. Akun dibuat secara internal.</p>
-        <p className="hint"><Link to="/">Kembali</Link></p>
         {showGuestInfo && (
           <div className="banner warn" style={{ marginTop: 12 }}>
             <div>

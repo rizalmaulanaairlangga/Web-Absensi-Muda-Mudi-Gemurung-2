@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Link, useNavigate, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Link, useNavigate, Navigate, useLocation } from 'react-router-dom';
 import { AppProvider, useApp } from './lib/store.jsx';
 import { BottomNav } from './components/ui.jsx';
 import Login from './pages/Login.jsx';
@@ -23,7 +23,7 @@ function Header() {
           <span className={`dot ${online ? (syncState === 'Menyinkronkan' ? 'sync' : 'online') : 'offline'}`} />
           {online ? (syncState === 'Menyinkronkan' ? 'Menyinkronkan' : 'Online') : 'Offline'}
         </span>
-        <select className="icon-btn" value={theme} onChange={(e) => setTheme(e.target.value)} aria-label="Pilih tema">
+        <select className="theme-select" value={theme} onChange={(e) => setTheme(e.target.value)} aria-label="Pilih tema">
           <option value="system">Auto</option>
           <option value="light">Terang</option>
           <option value="dark">Gelap</option>
@@ -53,6 +53,21 @@ function Guard({ children }) {
 }
 
 function Shell() {
+  const location = useLocation();
+  const isLogin = location.pathname === '/login';
+  if (isLogin) {
+    return (
+      <div className="app-shell login-shell">
+        <main className="login-main">
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route path="*" element={<Login />} />
+          </Routes>
+        </main>
+        <Toasts />
+      </div>
+    );
+  }
   return (
     <div className="app-shell">
       <Header />
