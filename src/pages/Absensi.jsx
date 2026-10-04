@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useApp } from '../lib/store.jsx';
+import { useApp, clientId } from '../lib/store.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { idbGet, idbSet } from '../lib/idb.js';
 import { todayJakarta, toISODate, formatID, dayName, dayOfWeek, isWithinWindow, windowOpenAt, canEdit, monthLabel } from '../lib/dates.js';
 import { surahName } from '../lib/quran.js';
 import { DEFAULT_ABSENCE, DEFAULT_STATUS, DEFAULT_HADITH, DEFAULT_FREE, DEFAULT_SPECIAL_TYPES, DEFAULT_SPEAKERS, guestSeed } from '../lib/seed.js';
-import { Modal, Empty, ChevronLeftIcon, ChevronRightIcon, ClockIcon, PlusIcon, CustomSelect } from '../components/ui.jsx';
+import { Modal, Empty, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, ChevronDownIcon, ClockIcon, PlusIcon, CustomSelect, EyeIcon, RefreshIcon } from '../components/ui.jsx';
 
 function timeRange(start, end) {
   const s = String(start || '').slice(0, 5);
@@ -46,6 +46,7 @@ function occurrencesForMonth(schedules, y, m) {
     schedules.filter((s) => s.active && s.day_of_week === dow).forEach((s) => {
       out.push({
         id: `occ-${iso}-${s.id}`,
+        localKey: `${s.id}|${iso}`,
         recurring_schedule_id: s.id,
         occurrence_date: iso,
         occurrence_time: String(s.event_time || '19:30').slice(0, 5),
@@ -76,6 +77,7 @@ function formCandidates(schedules) {
     schedules.filter((s) => s.active && s.day_of_week === dow).forEach((s) => {
       out.push({
         key: `${s.id}|${iso}`,
+        localKey: `${s.id}|${iso}`,
         recurring_schedule_id: s.id,
         occurrence_date: iso,
         occurrence_time: String(s.event_time || '19:30').slice(0, 5),
@@ -87,8 +89,17 @@ function formCandidates(schedules) {
   return out.sort((a, b) => (a.occurrence_date + a.occurrence_time).localeCompare(b.occurrence_date + b.occurrence_time));
 }
 
+function occKeyOf(occ) {
+  if (!occ) return null;
+  if (occ.id && !String(occ.id).startsWith('virt-')) return occ.id;
+  return occ.localKey || occ.id;
+}
+
 export default function Absensi() {
-  const { account, isGuest, online, toast, enqueue, supabaseReady } = useApp();
+  const {
+    account, isGuest, online, toast, enqueue, supabaseReady,
+    saveSnapshot, loadSnapshot, conflicts, resolveConflict, pendingCount, lastSyncAt,
+  } = useApp();
   const now = todayJakarta();
   const [tableYm, setTableYm] = useState({ y: now.getFullYear(), m: now.getMonth() + 1 });
   const [store, setStore] = useState(null);
@@ -99,6 +110,13 @@ export default function Absensi() {
   const [showSpecial, setShowSpecial] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [maleOpen, setMaleOpen] = useState(true);
+  const [femaleOpen, setFemaleOpen] = useState(true);
+  const [materialsOpen, setMaterialsOpen] = useState(true);
+  const [tableVisible, setTableVisible] = useState(false);
+  const [tableData, setTableData] = useState(null);
+  const [tableLoading, setTableLoading] = useState(false);
+  const [showConflicts, setShowConflicts] = useState(false);
   const [mat, setMat] = useState({ quran: true, hadith: false, nasehat: true, free: false, surah: '36', ayat: '1-10', pemateriQ: '', hadithId: '', halaman: '', pemateriH: '', nasehatBy: '', freeId: '', freeBy: '' });
   const [specialType, setSpecialType] = useState('');
 
@@ -124,24 +142,23 @@ export default function Absensi() {
         }
         return;
       }
-      await loadSupabase();
+      await loadFormData();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account?.id, tableYm.y, tableYm.m]);
+  }, [account?.id]);
 
-  async function loadSupabase() {
+  async function loadFormData() {
+    const aid = account.id;
     try {
-      const aid = account.id;
-      const [mem, abs, st, hd, fr, sp, ktp, sch, sett] = await Promise.all([
+      const [mem, abs, sch, sett, hd, fr, sp, ktp] = await Promise.all([
         supabase.from('members').select('*').eq('account_id', aid).order('nickname'),
         supabase.from('absence_types').select('*').eq('account_id', aid),
-        supabase.from('member_statuses').select('*').eq('account_id', aid),
+        supabase.from('recurring_schedules').select('*').eq('account_id', aid).eq('active', true),
+        supabase.from('app_settings').select('*').eq('account_id', aid).maybeSingle(),
         supabase.from('hadith_materials').select('*').eq('account_id', aid),
         supabase.from('free_activity_types').select('*').eq('account_id', aid),
         supabase.from('speakers').select('*').eq('account_id', aid),
         supabase.from('special_event_types').select('*').eq('account_id', aid),
-        supabase.from('recurring_schedules').select('*').eq('account_id', aid).eq('active', true),
-        supabase.from('app_settings').select('*').eq('account_id', aid).maybeSingle(),
       ]);
       let schedules = (sch.data || []).map((s) => ({
         id: s.id,
@@ -150,7 +167,14 @@ export default function Absensi() {
         end_time: s.end_time ? String(s.end_time).slice(0, 5) : null,
         active: s.active,
       }));
+      let absenceTypes = abs.data || [];
+      let speakers = sp.data || [];
+      let hadith = hd.data || [];
+      let free = fr.data || [];
+      let specialTypes = ktp.data || [];
+      let reseeded = false;
       if (schedules.length === 0) {
+        reseeded = true;
         const seed = [
           { day_of_week: 3, event_time: '19:30', end_time: '21:30' },
           { day_of_week: 5, event_time: '19:30', end_time: '21:30' },
@@ -159,16 +183,18 @@ export default function Absensi() {
           const { data } = await supabase.from('recurring_schedules').insert({ account_id: aid, day_of_week: s.day_of_week, event_time: s.event_time, end_time: s.end_time }).select().single();
           if (data) schedules.push({ id: data.id, day_of_week: data.day_of_week, event_time: String(data.event_time).slice(0, 5), end_time: data.end_time ? String(data.end_time).slice(0, 5) : null, active: true });
         }
-        if (abs.data?.length === 0) for (const n of DEFAULT_ABSENCE) await supabase.from('absence_types').insert({ account_id: aid, name: n });
-        if (st.data?.length === 0) for (const n of DEFAULT_STATUS) await supabase.from('member_statuses').insert({ account_id: aid, name: n });
-        if (hd.data?.length === 0) for (const n of DEFAULT_HADITH) await supabase.from('hadith_materials').insert({ account_id: aid, name: n });
-        if (fr.data?.length === 0) for (const n of DEFAULT_FREE) await supabase.from('free_activity_types').insert({ account_id: aid, name: n });
-        if (sp.data?.length === 0) for (const n of DEFAULT_SPEAKERS) await supabase.from('speakers').insert({ account_id: aid, name: n });
-        if (ktp.data?.length === 0) for (const n of DEFAULT_SPECIAL_TYPES) await supabase.from('special_event_types').insert({ account_id: aid, name: n });
+        if ((abs.data || []).length === 0) for (const n of DEFAULT_ABSENCE) await supabase.from('absence_types').insert({ account_id: aid, name: n });
+        for (const n of DEFAULT_STATUS) {
+          const { data: ex } = await supabase.from('member_statuses').select('id').eq('account_id', aid).eq('name', n).maybeSingle();
+          if (!ex) await supabase.from('member_statuses').insert({ account_id: aid, name: n });
+        }
+        if ((hd.data || []).length === 0) for (const n of DEFAULT_HADITH) await supabase.from('hadith_materials').insert({ account_id: aid, name: n });
+        if ((fr.data || []).length === 0) for (const n of DEFAULT_FREE) await supabase.from('free_activity_types').insert({ account_id: aid, name: n });
+        if ((sp.data || []).length === 0) for (const n of DEFAULT_SPEAKERS) await supabase.from('speakers').insert({ account_id: aid, name: n });
+        if ((ktp.data || []).length === 0) for (const n of DEFAULT_SPECIAL_TYPES) await supabase.from('special_event_types').insert({ account_id: aid, name: n });
       }
       const cands = formCandidates(schedules);
       const months = [...new Set(cands.map((c) => c.occurrence_date.slice(0, 7)))];
-      if (!months.includes(`${tableYm.y}-${String(tableYm.m).padStart(2, '0')}`)) months.push(`${tableYm.y}-${String(tableYm.m).padStart(2, '0')}`);
       for (const ymStr of months) {
         const [yy, mm] = ymStr.split('-').map(Number);
         const virt = occurrencesForMonth(schedules, yy, mm);
@@ -183,18 +209,12 @@ export default function Absensi() {
           }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date', ignoreDuplicates: true });
         }
       }
-      const minDate = cands.length ? cands[0].occurrence_date : `${tableYm.y}-${String(tableYm.m).padStart(2, '0')}-01`;
-      const maxDate = cands.length ? cands[cands.length - 1].occurrence_date : `${tableYm.y}-${String(tableYm.m).padStart(2, '0')}-31`;
-      const tableFirst = `${tableYm.y}-${String(tableYm.m).padStart(2, '0')}-01`;
-      const tableLast = `${tableYm.y}-${String(tableYm.m).padStart(2, '0')}-31`;
-      const [occDb, attDb, holDb, matDb] = await Promise.all([
-        supabase.from('schedule_occurrences').select('*').eq('account_id', aid).gte('occurrence_date', minDate < tableFirst ? minDate : tableFirst).lte('occurrence_date', maxDate > tableLast ? maxDate : tableLast).order('occurrence_date'),
-        supabase.from('attendance').select('*').eq('account_id', aid),
-        supabase.from('holidays').select('*').eq('account_id', aid),
-        supabase.from('materials').select('*').eq('account_id', aid),
-      ]);
+      const minDate = cands.length ? cands[0].occurrence_date : toISODate(todayJakarta());
+      const maxDate = cands.length ? cands[cands.length - 1].occurrence_date : toISODate(todayJakarta());
+      const occDb = await supabase.from('schedule_occurrences').select('*').eq('account_id', aid).gte('occurrence_date', minDate).lte('occurrence_date', maxDate).order('occurrence_date');
       const dbRows = (occDb.data || []).map((o) => ({
         id: o.id,
+        localKey: `${o.recurring_schedule_id}|${o.occurrence_date}`,
         recurring_schedule_id: o.recurring_schedule_id,
         occurrence_date: o.occurrence_date,
         occurrence_time: String(o.occurrence_time).slice(0, 5),
@@ -202,25 +222,47 @@ export default function Absensi() {
         day_name: o.day_name,
         is_holiday: o.is_holiday,
       }));
-      const byKey = new Map(dbRows.map((o) => [`${o.recurring_schedule_id}|${o.occurrence_date}`, o]));
+      const byKey = new Map(dbRows.map((o) => [o.localKey, o]));
       const formList = cands.map((c) => byKey.get(c.key) || { id: `virt-${c.key}`, ...c, virtual: true });
-      const tableList = dbRows.filter((o) => o.occurrence_date.startsWith(`${tableYm.y}-${String(tableYm.m).padStart(2, '0')}`));
-      const attMap = {};
-      (attDb.data || []).forEach((a) => { (attMap[a.occurrence_id] ||= []).push(a); });
+      const dbIds = dbRows.map((o) => o.id);
+      let attMap = {};
+      let holMap = {};
+      if (dbIds.length > 0) {
+        const attDb = await supabase.from('attendance').select('*').in('occurrence_id', dbIds);
+        (attDb.data || []).forEach((a) => { (attMap[a.occurrence_id] ||= []).push(a); });
+        const holDb = await supabase.from('holidays').select('*').gte('holiday_date', minDate).lte('holiday_date', maxDate);
+        holMap = Object.fromEntries((holDb.data || []).filter((h) => h.account_id === aid).map((h) => [h.occurrence_id, h]));
+      }
+      if (!absenceTypes.length) absenceTypes = DEFAULT_ABSENCE.map((n) => ({ name: n }));
+      if (reseeded) {
+        try {
+          const [rAbs, rSp, rHd, rFr, rKt] = await Promise.all([
+            supabase.from('absence_types').select('*').eq('account_id', aid),
+            supabase.from('speakers').select('*').eq('account_id', aid),
+            supabase.from('hadith_materials').select('*').eq('account_id', aid),
+            supabase.from('free_activity_types').select('*').eq('account_id', aid),
+            supabase.from('special_event_types').select('*').eq('account_id', aid),
+          ]);
+          if (rAbs.data?.length) absenceTypes = rAbs.data;
+          if (rSp.data?.length) speakers = rSp.data;
+          if (rHd.data?.length) hadith = rHd.data;
+          if (rFr.data?.length) free = rFr.data;
+          if (rKt.data?.length) specialTypes = rKt.data;
+        } catch { /* gunakan data awal */ }
+      }
       const s = {
         accountId: aid,
         members: (mem.data || []).map((m) => ({ id: m.id, full_name: m.full_name, nickname: m.nickname, gender: m.gender, joined_at: m.joined_at, active: m.active })),
-        absenceTypes: (abs.data?.length ? abs.data : DEFAULT_ABSENCE.map((n) => ({ name: n }))),
+        absenceTypes,
         schedules,
         lockHours: sett.data?.lock_duration_hours ?? 24,
-        occurrences: tableList,
+        occurrences: [],
         attendance: attMap,
-        holidays: Object.fromEntries((holDb.data || []).map((h) => [h.occurrence_id, h])),
-        speakers: sp.data || [],
-        hadith: hd.data || [],
-        free: fr.data || [],
-        specialTypes: ktp.data || [],
-        mats: matDb.data || [],
+        holidays: holMap,
+        speakers,
+        hadith,
+        free,
+        specialTypes,
       };
       setStore(s);
       setFormOccs(formList);
@@ -229,19 +271,122 @@ export default function Absensi() {
         const up = formList.find((o) => o.occurrence_date >= today) || formList[formList.length - 1];
         setSelectedKey(up.id);
       }
-    } catch (e) { toast('Gagal memuat data. Periksa koneksi lalu coba lagi.'); }
+      await saveSnapshot(aid, {
+        members: s.members, absenceTypes: s.absenceTypes, schedules: s.schedules,
+        lockHours: s.lockHours, speakers: s.speakers, hadith: s.hadith, free: s.free,
+        specialTypes: s.specialTypes, occurrences: dbRows, attendance: attMap, holidays: holMap,
+      });
+    } catch (e) {
+      const netErr = !navigator.onLine || /failed to fetch|network|timeout/i.test(String(e?.message || e || ''));
+      if (netErr) {
+        const snap = await loadSnapshot(account.id);
+        if (snap && snap.members) {
+          const cands = formCandidates(snap.schedules || []);
+          const byKey = new Map((snap.occurrences || []).map((o) => [o.localKey || `${o.recurring_schedule_id}|${o.occurrence_date}`, o]));
+          const formList = cands.map((c) => byKey.get(c.key) || { id: `virt-${c.key}`, ...c, virtual: true });
+          setStore({
+            accountId: account.id,
+            members: snap.members, absenceTypes: snap.absenceTypes || [], schedules: snap.schedules || [],
+            lockHours: snap.lockHours ?? 24, occurrences: [], attendance: snap.attendance || {}, holidays: snap.holidays || {},
+            speakers: snap.speakers || [], hadith: snap.hadith || [], free: snap.free || [], specialTypes: snap.specialTypes || [],
+            offline: true,
+          });
+          setFormOccs(formList);
+          if (!selectedKey && formList.length) {
+            const today = toISODate(todayJakarta());
+            const up = formList.find((o) => o.occurrence_date >= today) || formList[formList.length - 1];
+            setSelectedKey(up.id);
+          }
+          toast('Anda sedang offline. Menampilkan data terakhir yang tersimpan di perangkat.');
+          return;
+        }
+        setStore({
+          accountId: account.id, members: [], absenceTypes: [], schedules: [], lockHours: 24,
+          occurrences: [], attendance: {}, holidays: {}, speakers: [], hadith: [], free: [], specialTypes: [], offline: true, empty: true,
+        });
+        toast('Anda sedang offline dan belum ada data tersimpan. Hubungkan internet sekali untuk memuat awal.');
+      } else {
+        toast('Gagal memuat data. Periksa koneksi lalu coba lagi.');
+      }
+    }
   }
+
+  async function loadTable(ymOverride) {
+    const ym = ymOverride || tableYm;
+    if (!store || !account) return;
+    if (isGuest || !supabaseReady) {
+      const local = await idbGet('guest-data', null);
+      const occ = occurrencesForMonth(local?.schedules || store.schedules, ym.y, ym.m);
+      setTableData({ occurrences: occ, attendance: local?.attendance || store.attendance || {}, holidays: local?.holidays || {} });
+      return;
+    }
+    setTableLoading(true);
+    try {
+      const aid = account.id;
+      const virt = occurrencesForMonth(store.schedules, ym.y, ym.m);
+      for (const o of virt) {
+        await supabase.from('schedule_occurrences').upsert({
+          account_id: aid, recurring_schedule_id: o.recurring_schedule_id, occurrence_date: o.occurrence_date,
+          occurrence_time: o.occurrence_time, occurrence_end_time: o.occurrence_end_time, day_name: o.day_name,
+        }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date', ignoreDuplicates: true });
+      }
+      const first = `${ym.y}-${String(ym.m).padStart(2, '0')}-01`;
+      const last = `${ym.y}-${String(ym.m).padStart(2, '0')}-31`;
+      const occDb = await supabase.from('schedule_occurrences').select('*').eq('account_id', aid).gte('occurrence_date', first).lte('occurrence_date', last).order('occurrence_date');
+      const rows = (occDb.data || []).map((o) => ({
+        id: o.id, localKey: `${o.recurring_schedule_id}|${o.occurrence_date}`,
+        recurring_schedule_id: o.recurring_schedule_id, occurrence_date: o.occurrence_date,
+        occurrence_time: String(o.occurrence_time).slice(0, 5),
+        occurrence_end_time: o.occurrence_end_time ? String(o.occurrence_end_time).slice(0, 5) : null,
+        day_name: o.day_name, is_holiday: o.is_holiday,
+      }));
+      const ids = rows.map((o) => o.id);
+      let attMap = {};
+      let holMap = {};
+      if (ids.length > 0) {
+        const attDb = await supabase.from('attendance').select('*').in('occurrence_id', ids);
+        (attDb.data || []).forEach((a) => { (attMap[a.occurrence_id] ||= []).push(a); });
+        const holDb = await supabase.from('holidays').select('*').eq('account_id', aid).gte('holiday_date', first).lte('holiday_date', last);
+        holMap = Object.fromEntries((holDb.data || []).map((h) => [h.occurrence_id, h]));
+      }
+      setTableData({ occurrences: rows, attendance: attMap, holidays: holMap });
+    } catch {
+      toast('Gagal memuat tabel. Periksa koneksi lalu coba lagi.');
+    }
+    setTableLoading(false);
+  }
+
+  useEffect(() => {
+    if (tableVisible && store && !tableData) loadTable();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tableVisible]);
+
+  useEffect(() => {
+    if (tableVisible && tableData) loadTable();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tableYm.m, tableYm.y]);
+
+  useEffect(() => {
+    if (lastSyncAt > 0 && store && account && !isGuest && supabaseReady && online) {
+      loadFormData();
+      if (tableVisible) loadTable();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastSyncAt]);
 
   const occ = useMemo(() => {
     if (!store) return null;
     const inForm = formOccs.find((o) => o.id === selectedKey);
     if (inForm) return inForm;
-    return store.occurrences.find((o) => o.id === selectedKey) || formOccs[0] || store.occurrences[0];
+    return formOccs[0] || null;
   }, [store, formOccs, selectedKey]);
 
-  const occDbId = occ && !String(occ.id).startsWith('virt-') ? occ.id : null;
-  const submitted = useMemo(() => (occDbId && store?.attendance?.[occDbId]?.length > 0) || (!occDbId && occ && store?.attendance?.[occ.id]?.length > 0) || false, [store, occ, occDbId]);
-  const attendanceKey = occDbId || occ?.id;
+  const attendanceKey = occKeyOf(occ);
+  const submitted = useMemo(() => {
+    if (!occ || !store) return false;
+    const keys = [occ.id, occ.localKey].filter(Boolean);
+    return keys.some((k) => (store.attendance?.[k] || []).length > 0);
+  }, [store, occ]);
   const eligible = useMemo(() => {
     if (!store || !occ) return [];
     return store.members.filter((m) => m.active && (!m.joined_at || m.joined_at <= occ.occurrence_date));
@@ -249,25 +394,69 @@ export default function Absensi() {
   const males = eligible.filter((m) => m.gender === 'MALE');
   const females = eligible.filter((m) => m.gender === 'FEMALE');
 
+  const myConflicts = useMemo(() => {
+    if (!occ || !conflicts.length) return [];
+    return conflicts.filter((op) => {
+      if (!op.occurrence) return false;
+      return op.occurrence.recurring_schedule_id === occ.recurring_schedule_id
+        && op.occurrence.occurrence_date === occ.occurrence_date;
+    });
+  }, [conflicts, occ]);
+
   useEffect(() => {
-    if (!occ || !store) return;
-    const key = occDbId || occ.id;
-    const saved = store.attendance?.[key];
-    if (saved?.length && editing) {
-      const map = {};
-      saved.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : {}; });
-      setAnswers(map);
-    } else if (!submitted) {
-      idbGet(`draft-${account?.id}-${key}`, null).then((d) => { if (d?.answers) setAnswers(d.answers); });
-    }
+    if (!occ || !store || !account) return;
+    const key = attendanceKey;
+    (async () => {
+      if (editing) {
+        const saved = key ? store.attendance?.[key] : null;
+        if (saved?.length) {
+          const map = {};
+          saved.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : {}; });
+          setAnswers(map);
+        } else if (!isGuest && supabaseReady && online && occ.id && !String(occ.id).startsWith('virt-')) {
+          try {
+            const attDb = await supabase.from('attendance').select('*').eq('occurrence_id', occ.id);
+            if ((attDb.data || []).length > 0) {
+              const map = {};
+              attDb.data.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : {}; });
+              setAnswers(map);
+              setStore((p) => ({ ...p, attendance: { ...p.attendance, [occ.id]: attDb.data } }));
+            }
+            const matDb = await supabase.from('materials').select('*').eq('occurrence_id', occ.id);
+            if ((matDb.data || []).length > 0) {
+              const byKind = {};
+              matDb.data.forEach((r) => { byKind[r.kind] = r; });
+              setMat((p) => ({
+                ...p,
+                quran: Boolean(byKind.QURAN) || p.quran,
+                surah: byKind.QURAN?.quran_surah_number ? String(byKind.QURAN.quran_surah_number) : p.surah,
+                ayat: byKind.QURAN?.ayat_range || p.ayat,
+                pemateriQ: byKind.QURAN?.speaker_name_snapshot || p.pemateriQ,
+                hadith: Boolean(byKind.HADITH),
+                hadithId: byKind.HADITH?.hadith_name_snapshot || '',
+                halaman: byKind.HADITH?.hadith_page || '',
+                pemateriH: byKind.HADITH?.speaker_name_snapshot || '',
+                nasehat: Boolean(byKind.NASEHAT),
+                nasehatBy: byKind.NASEHAT?.speaker_name_snapshot || '',
+                free: Boolean(byKind.FREE),
+                freeId: byKind.FREE?.free_activity_name_snapshot || '',
+                freeBy: byKind.FREE?.speaker_name_snapshot || '',
+              }));
+            }
+          } catch { /* abaikan, gunakan state lokal */ }
+        }
+      } else if (!submitted && key) {
+        idbGet(`draft-${account.id}-${key}`, null).then((d) => { if (d?.answers) setAnswers(d.answers); });
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [occ?.id, editing]);
 
   useEffect(() => {
-    if (!occ || !account) return;
-    const key = occDbId || occ.id;
-    if (!submitted && !editing) idbSet(`draft-${account.id}-${key}`, { answers, mat });
-  }, [answers, mat]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!occ || !account || !attendanceKey) return;
+    if (!submitted && !editing) idbSet(`draft-${account.id}-${attendanceKey}`, { answers, mat });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [answers, mat]);
 
   function setHadir(id, v) {
     setAnswers((p) => ({ ...p, [id]: v ? { hadir: true } : {} }));
@@ -281,18 +470,35 @@ export default function Absensi() {
   const surah = surahName(mat.surah);
   const matEmpty = !mat.quran && !mat.hadith && !mat.nasehat && !mat.free;
 
-  async function resolveDbOccurrence() {
-    if (occDbId) return occDbId;
-    const { data, error } = await supabase.from('schedule_occurrences').upsert({
-      account_id: account.id,
+  function buildMats() {
+    const arr = [];
+    if (mat.quran && surah) arr.push({ clientId: clientId('m'), kind: 'QURAN', surah: Number(mat.surah), surahName: surah, ayat: mat.ayat, speaker: mat.pemateriQ || null });
+    if (mat.hadith && mat.hadithId) arr.push({ clientId: clientId('m'), kind: 'HADITH', hadith: mat.hadithId, halaman: mat.halaman || null, speaker: mat.pemateriH || null });
+    if (mat.nasehat && mat.nasehatBy) arr.push({ clientId: clientId('m'), kind: 'NASEHAT', speaker: mat.nasehatBy });
+    if (mat.free && mat.freeId) arr.push({ clientId: clientId('m'), kind: 'FREE', activity: mat.freeId, speaker: mat.freeBy || null });
+    return arr;
+  }
+
+  function occDescriptor() {
+    return {
       recurring_schedule_id: occ.recurring_schedule_id,
       occurrence_date: occ.occurrence_date,
       occurrence_time: occ.occurrence_time,
-      occurrence_end_time: occ.occurrence_end_time,
+      occurrence_end_time: occ.occurrence_end_time || null,
       day_name: occ.day_name,
-    }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date' }).select().single();
-    if (error) throw error;
-    return data.id;
+    };
+  }
+
+  async function persistLocalOverlay(key, recs) {
+    setStore((p) => {
+      const next = { ...p, attendance: { ...p.attendance, [key]: recs } };
+      saveSnapshot(account.id, {
+        members: next.members, absenceTypes: next.absenceTypes, schedules: next.schedules,
+        lockHours: next.lockHours, speakers: next.speakers, hadith: next.hadith, free: next.free,
+        specialTypes: next.specialTypes, occurrences: [], attendance: next.attendance, holidays: next.holidays,
+      });
+      return next;
+    });
   }
 
   async function onSave() {
@@ -306,29 +512,66 @@ export default function Absensi() {
       const rows = eligible.map((m) => {
         const a = answers[m.id] || {};
         const status = a.hadir ? 'PRESENT' : a.izin ? 'PERMITTED' : 'ALPHA';
-        return { member_id: m.id, member_name: m.nickname, status, absence: a.izin || null };
+        return { member_id: m.id, member_name: m.nickname || m.full_name, status, absence: a.izin || null };
       });
+      const mats = buildMats();
       if (isGuest || !supabaseReady) {
         const key = occ.id;
         const recs = rows.map((r) => ({ member_id: r.member_id, member_name_snapshot: r.member_name, status: r.status, absence_name_snapshot: r.absence }));
         setStore((p) => ({ ...p, attendance: { ...p.attendance, [key]: recs } }));
-        await idbSet('guest-data', { ...store, attendance: { ...store.attendance, [key]: recs } });
+        const local = await idbGet('guest-data', null);
+        if (local) await idbSet('guest-data', { ...local, attendance: { ...(local.attendance || {}), [key]: recs } });
+      } else if (!online) {
+        const key = occKeyOf(occ);
+        const recs = rows.map((r) => ({ member_id: r.member_id, member_name_snapshot: r.member_name, status: r.status, absence_name_snapshot: r.absence }));
+        await enqueue({ type: 'SAVE_ATTENDANCE', accountId: account.id, occurrence: occDescriptor(), rows, mats });
+        await persistLocalOverlay(key, recs);
+        toast('Tersimpan di perangkat. Akan dikirim otomatis saat koneksi kembali.');
       } else {
-        const dbId = await resolveDbOccurrence();
-        for (const r of rows) {
-          await supabase.from('attendance').upsert({ account_id: account.id, occurrence_id: dbId, member_id: r.member_id, status: r.status, absence_name_snapshot: r.absence, member_name_snapshot: r.member_name }, { onConflict: 'account_id,occurrence_id,member_id' });
+        try {
+          const { data: dbOcc, error: occErr } = await supabase.from('schedule_occurrences').upsert({
+            account_id: account.id,
+            recurring_schedule_id: occ.recurring_schedule_id,
+            occurrence_date: occ.occurrence_date,
+            occurrence_time: occ.occurrence_time,
+            occurrence_end_time: occ.occurrence_end_time || null,
+            day_name: occ.day_name,
+          }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date' }).select().single();
+          if (occErr) throw occErr;
+          for (const r of rows) {
+            const { error } = await supabase.from('attendance').upsert({ account_id: account.id, occurrence_id: dbOcc.id, member_id: r.member_id, status: r.status, absence_name_snapshot: r.absence, member_name_snapshot: r.member_name }, { onConflict: 'account_id,occurrence_id,member_id' });
+            if (error) throw error;
+          }
+          for (const mm of mats) {
+            const payload = { id: mm.clientId, account_id: account.id, occurrence_id: dbOcc.id, kind: mm.kind };
+            if (mm.kind === 'QURAN') { payload.quran_surah_number = mm.surah; payload.quran_surah_name_snapshot = mm.surahName; payload.ayat_range = mm.ayat; payload.speaker_name_snapshot = mm.speaker; }
+            if (mm.kind === 'HADITH') { payload.hadith_name_snapshot = mm.hadith; payload.hadith_page = mm.halaman; payload.speaker_name_snapshot = mm.speaker; }
+            if (mm.kind === 'NASEHAT') { payload.speaker_name_snapshot = mm.speaker; }
+            if (mm.kind === 'FREE') { payload.free_activity_name_snapshot = mm.activity; payload.speaker_name_snapshot = mm.speaker; }
+            const { error } = await supabase.from('materials').upsert(payload, { onConflict: 'id' });
+            if (error) throw error;
+          }
+          try {
+            await supabase.from('audit_logs').insert({ account_id: account.id, action: submitted ? 'UPDATE_ATTENDANCE' : 'CREATE_ATTENDANCE', entity_type: 'attendance', entity_id: dbOcc.id, new_data: { count: rows.length } });
+          } catch { /* audit best-effort */ }
+          const recs = rows.map((r) => ({ member_id: r.member_id, member_name_snapshot: r.member_name, status: r.status, absence_name_snapshot: r.absence }));
+          setStore((p) => ({ ...p, attendance: { ...p.attendance, [dbOcc.id]: recs } }));
+          if (tableVisible) await loadTable();
+          toast(`Absensi ${formatID(occ.occurrence_date)} berhasil disimpan.`);
+        } catch (e) {
+          const netErr = !navigator.onLine || /failed to fetch|network|timeout/i.test(String(e?.message || e || ''));
+          if (netErr) {
+            const key = occKeyOf(occ);
+            const recs = rows.map((r) => ({ member_id: r.member_id, member_name_snapshot: r.member_name, status: r.status, absence_name_snapshot: r.absence }));
+            await enqueue({ type: 'SAVE_ATTENDANCE', accountId: account.id, occurrence: occDescriptor(), rows, mats });
+            await persistLocalOverlay(key, recs);
+            toast('Koneksi terputus. Data tersimpan di perangkat dan akan dikirim otomatis.');
+          } else {
+            throw e;
+          }
         }
-        const mats = [];
-        if (mat.quran) mats.push({ account_id: account.id, occurrence_id: dbId, kind: 'QURAN', quran_surah_number: Number(mat.surah), quran_surah_name_snapshot: surah, ayat_range: mat.ayat, speaker_name_snapshot: mat.pemateriQ });
-        if (mat.hadith && mat.hadithId) mats.push({ account_id: account.id, occurrence_id: dbId, kind: 'HADITH', hadith_name_snapshot: mat.hadithId, hadith_page: mat.halaman, speaker_name_snapshot: mat.pemateriH });
-        if (mat.nasehat && mat.nasehatBy) mats.push({ account_id: account.id, occurrence_id: dbId, kind: 'NASEHAT', speaker_name_snapshot: mat.nasehatBy });
-        if (mat.free && mat.freeId) mats.push({ account_id: account.id, occurrence_id: dbId, kind: 'FREE', free_activity_name_snapshot: mat.freeId, speaker_name_snapshot: mat.freeBy });
-        for (const mm of mats) await supabase.from('materials').insert(mm);
-        await supabase.from('audit_logs').insert({ account_id: account.id, action: submitted ? 'UPDATE_ATTENDANCE' : 'CREATE_ATTENDANCE', entity_type: 'attendance', entity_id: dbId, new_data: { count: rows.length } });
-        await loadSupabase();
       }
-      if (!online) await enqueue({ operation: 'SAVE_ATTENDANCE', occurrenceId: attendanceKey, payload: rows });
-      toast(`Absensi ${formatID(occ.occurrence_date)} berhasil disimpan.`);
+      if (isGuest || !supabaseReady) toast(`Absensi ${formatID(occ.occurrence_date)} berhasil disimpan.`);
       setEditing(false);
     } catch { toast('Data gagal disimpan. Periksa koneksi internet dan coba lagi.'); }
     setSaving(false);
@@ -336,25 +579,46 @@ export default function Absensi() {
 
   if (!account) return <div className="card"><Empty title="Perlu masuk" desc="Masuk atau lanjut sebagai tamu untuk mengisi absensi." /></div>;
   if (!store) return <div className="card"><div className="skeleton" style={{ height: 120 }} /><p className="hint">Memuat data...</p></div>;
+  if (store.empty) {
+    return (
+      <div>
+        {!online && <div className="banner warn"><span>Anda sedang offline. Perubahan akan disimpan di perangkat dan dikirim saat koneksi kembali.</span></div>}
+        <div className="card"><Empty title="Belum ada data offline" desc="Hubungkan internet sekali untuk memuat anggota dan jadwal, setelah itu form dapat digunakan offline." /></div>
+      </div>
+    );
+  }
 
   const todayStr = toISODate(todayJakarta());
   const todayDow = todayJakarta().getDay();
   const hasScheduleToday = store.schedules.some((s) => s.day_of_week === todayDow);
-  const recentPool = formOccs.length ? formOccs : store.occurrences;
+  const recentPool = formOccs.length ? formOccs : [];
   const prevUnfilled = recentPool.find((o) => {
-    const key = (!String(o.id).startsWith('virt-')) ? o.id : o.id;
+    const key = occKeyOf(o);
     return o.occurrence_date < todayStr && !(store.attendance?.[key]?.length) && !store.holidays?.[key];
   });
 
-  function renderGroup(title, kind, list) {
+  function renderGroup(title, kind, list, open, setOpen) {
     return (
       <section className={`member-group ${kind}`} aria-label={title}>
         <div className="member-group-head">
-          <h3 className="member-group-title">{title}</h3>
-          <span className="member-count">{list.length} orang</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <h3 className="member-group-title">{title}</h3>
+            <span className="member-count">{list.length} orang</span>
+          </div>
+          <button
+            type="button"
+            className="collapse-btn"
+            aria-expanded={open}
+            aria-label={open ? `Sembunyikan ${title}` : `Tampilkan ${title}`}
+            onClick={() => setOpen((v) => !v)}
+          >
+            {open ? <ChevronUpIcon /> : <ChevronDownIcon />}
+            <span>{open ? 'Sembunyikan' : 'Tampilkan'}</span>
+          </button>
         </div>
-        {list.length === 0 && <p className="hint">Belum ada anggota.</p>}
-        {list.length > 0 && (
+        {!open && <p className="hint" style={{ margin: 0 }}>Bagian disembunyikan. Data yang sudah diisi tetap tersimpan.</p>}
+        {open && list.length === 0 && <p className="hint">Belum ada anggota.</p>}
+        {open && list.length > 0 && (
           <div className="member-rows">
             {list.map((m) => {
               const a = answers[m.id] || {};
@@ -383,7 +647,13 @@ export default function Absensi() {
   return (
     <div>
       {isGuest && <div className="banner info"><span>Mode Tamu. Data yang digunakan adalah data demo dan akan dihapus otomatis.</span></div>}
-      {!online && <div className="banner warn"><span>Anda sedang offline. Perubahan akan disimpan di perangkat dan dikirim saat koneksi kembali.</span></div>}
+      {!online && <div className="banner warn"><span>Anda sedang offline. Perubahan akan disimpan di perangkat dan dikirim saat koneksi kembali.{pendingCount > 0 ? ` ${pendingCount} perubahan menunggu sinkron.` : ''}</span></div>}
+      {conflicts.length > 0 && (
+        <div className="banner warn">
+          <span>Ada {conflicts.length} data yang berbeda dengan server dan perlu keputusan Anda.</span>
+          <button className="btn" style={{ marginLeft: 'auto', minHeight: 36 }} onClick={() => setShowConflicts(true)}>Lihat</button>
+        </div>
+      )}
 
       <div className="card">
         <div>
@@ -405,8 +675,8 @@ export default function Absensi() {
             value={selectedKey || ''}
             ariaLabel="Pilih jadwal"
             placeholder="Pilih jadwal"
-            options={(formOccs.length ? formOccs : store.occurrences).map((o) => {
-              const key = (!String(o.id).startsWith('virt-')) ? o.id : o.id;
+            options={(formOccs.length ? formOccs : []).map((o) => {
+              const key = occKeyOf(o);
               return {
                 value: o.id,
                 label: `${formatID(o.occurrence_date)} • ${timeRange(o.occurrence_time, o.occurrence_end_time)}${store.attendance?.[key]?.length ? ' • Sudah diisi' : ''}${store.holidays?.[key] ? ' • Libur' : ''}`,
@@ -435,78 +705,97 @@ export default function Absensi() {
               <span className="lg"><span className="mark izin">I</span> Dropdown izin = Izin</span>
             </div>
             <div className="member-groups">
-              {renderGroup('LAKI-LAKI', 'male', males)}
-              {renderGroup('PEREMPUAN', 'female', females)}
+              {renderGroup('LAKI-LAKI', 'male', males, maleOpen, setMaleOpen)}
+              {renderGroup('PEREMPUAN', 'female', females, femaleOpen, setFemaleOpen)}
             </div>
 
-            <h3 style={{ marginTop: 18 }}>Materi Pengajian</h3>
-            <div className={`material-card${mat.quran ? '' : ' off'}`}>
-              <div className="material-toggle"><span>Al-Quran</span><label className="switch"><input type="checkbox" checked={mat.quran} onChange={(e) => setMat({ ...mat, quran: e.target.checked })} aria-label="Aktifkan materi Al-Quran" /><span className="track" /></label></div>
-              {mat.quran && (
-                <div className="material-card-body">
-                  <div className="row cols-3">
-                    <label className="field"><span>Nomor Surat</span><input className="input" inputMode="numeric" value={mat.surah} onChange={(e) => setMat({ ...mat, surah: e.target.value })} /></label>
-                    <label className="field"><span>Surat</span><input className="input" value={surah || ''} readOnly placeholder="Nama surat muncul otomatis" /></label>
-                    <label className="field"><span>Ayat</span><input className="input" value={mat.ayat} onChange={(e) => setMat({ ...mat, ayat: e.target.value })} placeholder="1-10" /></label>
+            <div className="material-group">
+              <div className="material-group-head">
+                <h3 style={{ margin: 0 }}>Materi Pengajian</h3>
+                <button
+                  type="button"
+                  className="collapse-btn"
+                  aria-expanded={materialsOpen}
+                  aria-label={materialsOpen ? 'Sembunyikan materi pengajian' : 'Tampilkan materi pengajian'}
+                  onClick={() => setMaterialsOpen((v) => !v)}
+                >
+                  {materialsOpen ? <ChevronUpIcon /> : <ChevronDownIcon />}
+                  <span>{materialsOpen ? 'Sembunyikan' : 'Tampilkan'}</span>
+                </button>
+              </div>
+              {!materialsOpen && <p className="hint" style={{ margin: '8px 0 0' }}>Materi disembunyikan. Isian tetap tersimpan.</p>}
+              {materialsOpen && (
+                <>
+                  <div className={`material-card${mat.quran ? '' : ' off'}`}>
+                    <div className="material-toggle"><span>Al-Quran</span><label className="switch"><input type="checkbox" checked={mat.quran} onChange={(e) => setMat({ ...mat, quran: e.target.checked })} aria-label="Aktifkan materi Al-Quran" /><span className="track" /></label></div>
+                    {mat.quran && (
+                      <div className="material-card-body">
+                        <div className="row cols-3">
+                          <label className="field"><span>Nomor Surat</span><input className="input" inputMode="numeric" value={mat.surah} onChange={(e) => setMat({ ...mat, surah: e.target.value })} /></label>
+                          <label className="field"><span>Surat</span><input className="input" value={surah || ''} readOnly placeholder="Nama surat muncul otomatis" /></label>
+                          <label className="field"><span>Ayat</span><input className="input" value={mat.ayat} onChange={(e) => setMat({ ...mat, ayat: e.target.value })} placeholder="1-10" /></label>
+                        </div>
+                        {mat.surah && !surah && <p className="field-error">Nomor surat harus berada di antara 1-114.</p>}
+                        <label className="field"><span>Pemateri</span>
+                          <CustomSelect value={mat.pemateriQ} ariaLabel="Pemateri Al-Quran" placeholder="Pilih pemateri"
+                            options={[{ value: '', label: 'Pilih pemateri' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
+                            onChange={(v) => setMat({ ...mat, pemateriQ: v })} />
+                        </label>
+                      </div>
+                    )}
                   </div>
-                  {mat.surah && !surah && <p className="field-error">Nomor surat harus berada di antara 1-114.</p>}
-                  <label className="field"><span>Pemateri</span>
-                    <CustomSelect value={mat.pemateriQ} ariaLabel="Pemateri Al-Quran" placeholder="Pilih pemateri"
-                      options={[{ value: '', label: 'Pilih pemateri' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
-                      onChange={(v) => setMat({ ...mat, pemateriQ: v })} />
-                  </label>
-                </div>
-              )}
-            </div>
-            <div className={`material-card${mat.hadith ? '' : ' off'}`}>
-              <div className="material-toggle"><span>Hadist</span><label className="switch"><input type="checkbox" checked={mat.hadith} onChange={(e) => setMat({ ...mat, hadith: e.target.checked })} aria-label="Aktifkan materi Hadist" /><span className="track" /></label></div>
-              {mat.hadith && (
-                <div className="material-card-body">
-                  <div className="row cols-2">
-                    <label className="field"><span>Hadist</span>
-                      <CustomSelect value={mat.hadithId} ariaLabel="Pilih hadist" placeholder="Pilih hadist"
-                        options={[{ value: '', label: 'Pilih hadist' }, ...(store.hadith || []).map((h) => ({ value: h.name, label: h.name }))]}
-                        onChange={(v) => setMat({ ...mat, hadithId: v })} />
-                    </label>
-                    <label className="field"><span>Halaman</span><input className="input" value={mat.halaman} onChange={(e) => setMat({ ...mat, halaman: e.target.value })} /></label>
+                  <div className={`material-card${mat.hadith ? '' : ' off'}`}>
+                    <div className="material-toggle"><span>Hadist</span><label className="switch"><input type="checkbox" checked={mat.hadith} onChange={(e) => setMat({ ...mat, hadith: e.target.checked })} aria-label="Aktifkan materi Hadist" /><span className="track" /></label></div>
+                    {mat.hadith && (
+                      <div className="material-card-body">
+                        <div className="row cols-2">
+                          <label className="field"><span>Hadist</span>
+                            <CustomSelect value={mat.hadithId} ariaLabel="Pilih hadist" placeholder="Pilih hadist"
+                              options={[{ value: '', label: 'Pilih hadist' }, ...(store.hadith || []).map((h) => ({ value: h.name, label: h.name }))]}
+                              onChange={(v) => setMat({ ...mat, hadithId: v })} />
+                          </label>
+                          <label className="field"><span>Halaman</span><input className="input" value={mat.halaman} onChange={(e) => setMat({ ...mat, halaman: e.target.value })} /></label>
+                        </div>
+                        <label className="field"><span>Pemateri</span>
+                          <CustomSelect value={mat.pemateriH} ariaLabel="Pemateri Hadist" placeholder="Pilih pemateri"
+                            options={[{ value: '', label: 'Pilih pemateri' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
+                            onChange={(v) => setMat({ ...mat, pemateriH: v })} />
+                        </label>
+                      </div>
+                    )}
                   </div>
-                  <label className="field"><span>Pemateri</span>
-                    <CustomSelect value={mat.pemateriH} ariaLabel="Pemateri Hadist" placeholder="Pilih pemateri"
-                      options={[{ value: '', label: 'Pilih pemateri' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
-                      onChange={(v) => setMat({ ...mat, pemateriH: v })} />
-                  </label>
-                </div>
-              )}
-            </div>
-            <div className={`material-card${mat.nasehat ? '' : ' off'}`}>
-              <div className="material-toggle"><span>Nasehat</span><label className="switch"><input type="checkbox" checked={mat.nasehat} onChange={(e) => setMat({ ...mat, nasehat: e.target.checked })} aria-label="Aktifkan materi Nasehat" /><span className="track" /></label></div>
-              {mat.nasehat && (
-                <div className="material-card-body">
-                  <label className="field"><span>Penyampai nasehat</span>
-                    <CustomSelect value={mat.nasehatBy} ariaLabel="Penyampai nasehat" placeholder="Pilih penyampai"
-                      options={[{ value: '', label: 'Pilih penyampai' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
-                      onChange={(v) => setMat({ ...mat, nasehatBy: v })} />
-                  </label>
-                </div>
-              )}
-            </div>
-            <div className={`material-card${mat.free ? '' : ' off'}`}>
-              <div className="material-toggle"><span>Materi / Kegiatan Bebas</span><label className="switch"><input type="checkbox" checked={mat.free} onChange={(e) => setMat({ ...mat, free: e.target.checked })} aria-label="Aktifkan materi bebas" /><span className="track" /></label></div>
-              {mat.free && (
-                <div className="material-card-body">
-                  <div className="row cols-2">
-                    <label className="field"><span>Kegiatan</span>
-                      <CustomSelect value={mat.freeId} ariaLabel="Pilih kegiatan" placeholder="Pilih kegiatan"
-                        options={[{ value: '', label: 'Pilih kegiatan' }, ...(store.free || []).map((f) => ({ value: f.name, label: f.name }))]}
-                        onChange={(v) => setMat({ ...mat, freeId: v })} />
-                    </label>
-                    <label className="field"><span>Penanggung jawab</span>
-                      <CustomSelect value={mat.freeBy} ariaLabel="Pilih penanggung jawab" placeholder="Pilih penanggung jawab"
-                        options={[{ value: '', label: 'Pilih penanggung jawab' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
-                        onChange={(v) => setMat({ ...mat, freeBy: v })} />
-                    </label>
+                  <div className={`material-card${mat.nasehat ? '' : ' off'}`}>
+                    <div className="material-toggle"><span>Nasehat</span><label className="switch"><input type="checkbox" checked={mat.nasehat} onChange={(e) => setMat({ ...mat, nasehat: e.target.checked })} aria-label="Aktifkan materi Nasehat" /><span className="track" /></label></div>
+                    {mat.nasehat && (
+                      <div className="material-card-body">
+                        <label className="field"><span>Penyampai nasehat</span>
+                          <CustomSelect value={mat.nasehatBy} ariaLabel="Penyampai nasehat" placeholder="Pilih penyampai"
+                            options={[{ value: '', label: 'Pilih penyampai' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
+                            onChange={(v) => setMat({ ...mat, nasehatBy: v })} />
+                        </label>
+                      </div>
+                    )}
                   </div>
-                </div>
+                  <div className={`material-card${mat.free ? '' : ' off'}`}>
+                    <div className="material-toggle"><span>Materi / Kegiatan Bebas</span><label className="switch"><input type="checkbox" checked={mat.free} onChange={(e) => setMat({ ...mat, free: e.target.checked })} aria-label="Aktifkan materi bebas" /><span className="track" /></label></div>
+                    {mat.free && (
+                      <div className="material-card-body">
+                        <div className="row cols-2">
+                          <label className="field"><span>Kegiatan</span>
+                            <CustomSelect value={mat.freeId} ariaLabel="Pilih kegiatan" placeholder="Pilih kegiatan"
+                              options={[{ value: '', label: 'Pilih kegiatan' }, ...(store.free || []).map((f) => ({ value: f.name, label: f.name }))]}
+                              onChange={(v) => setMat({ ...mat, freeId: v })} />
+                          </label>
+                          <label className="field"><span>Penanggung jawab</span>
+                            <CustomSelect value={mat.freeBy} ariaLabel="Pilih penanggung jawab" placeholder="Pilih penanggung jawab"
+                              options={[{ value: '', label: 'Pilih penanggung jawab' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
+                              onChange={(v) => setMat({ ...mat, freeBy: v })} />
+                          </label>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
             </div>
 
@@ -531,25 +820,41 @@ export default function Absensi() {
             <button className="icon-btn" onClick={() => setTableYm((p) => (p.m === 12 ? { y: p.y + 1, m: 1 } : { y: p.y, m: p.m + 1 }))} aria-label="Bulan berikutnya"><ChevronRightIcon /></button>
           </div>
         </div>
-        <div className="table-wrap">
-          <table className="att">
-            <thead><tr><th>Nama</th>{store.occurrences.map((o) => <th key={o.id}>{o.occurrence_date.slice(8, 10)}<br />{String(o.occurrence_time).slice(0, 5)}</th>)}</tr></thead>
-            <tbody>
-              {store.members.filter((m) => m.active).map((m) => (
-                <tr key={m.id}>
-                  <td>{m.nickname || m.full_name}</td>
-                  {store.occurrences.map((o) => {
-                    if (store.holidays?.[o.id]) return <td key={o.id} className="cell-libur">LIBUR</td>;
-                    const rec = (store.attendance?.[o.id] || []).find((a) => (a.member_id || a.memberId) === m.id);
-                    if (!rec) return <td key={o.id} className="cell-kosong">-</td>;
-                    const st = rec.status;
-                    return <td key={o.id} className={st === 'PRESENT' ? 'cell-hadir' : st === 'PERMITTED' ? 'cell-izin' : 'cell-alpha'}>{st === 'PRESENT' ? '✓' : st === 'PERMITTED' ? 'I' : 'A'}</td>;
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {!tableVisible ? (
+          <div className="table-placeholder">
+            <p className="card-desc" style={{ marginBottom: 12 }}>Data absensi belum ditampilkan.</p>
+            <button className="btn btn-primary" onClick={() => setTableVisible(true)}><EyeIcon /> Tampilkan Data Absensi</button>
+          </div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
+              <button className="btn" style={{ minHeight: 40 }} disabled={tableLoading} onClick={() => loadTable()}><RefreshIcon /> {tableLoading ? 'Memuat...' : 'Refresh'}</button>
+            </div>
+            {!tableData ? (
+              <p className="hint">{tableLoading ? 'Memuat data absensi...' : 'Menyiapkan tabel...'}</p>
+            ) : (
+              <div className="table-wrap">
+                <table className="att">
+                  <thead><tr><th>Nama</th>{tableData.occurrences.map((o) => <th key={o.id}>{o.occurrence_date.slice(8, 10)}<br />{String(o.occurrence_time).slice(0, 5)}</th>)}</tr></thead>
+                  <tbody>
+                    {(store.members || []).filter((m) => m.active).map((m) => (
+                      <tr key={m.id}>
+                        <td>{m.nickname || m.full_name}</td>
+                        {tableData.occurrences.map((o) => {
+                          if (tableData.holidays?.[o.id]) return <td key={o.id} className="cell-libur">LIBUR</td>;
+                          const rec = (tableData.attendance?.[o.id] || []).find((a) => (a.member_id || a.memberId) === m.id);
+                          if (!rec) return <td key={o.id} className="cell-kosong">-</td>;
+                          const st = rec.status;
+                          return <td key={o.id} className={st === 'PRESENT' ? 'cell-hadir' : st === 'PERMITTED' ? 'cell-izin' : 'cell-alpha'}>{st === 'PRESENT' ? '✓' : st === 'PERMITTED' ? 'I' : 'A'}</td>;
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {showHoliday && (
@@ -558,12 +863,20 @@ export default function Absensi() {
           if (isGuest || !supabaseReady) {
             const key = occ.id;
             setStore((p) => ({ ...p, holidays: { ...p.holidays, [key]: { reason: 'Libur' } } }));
+          } else if (!online) {
+            toast('Anda sedang offline. Tandai libur akan tersedia saat koneksi kembali.');
           } else {
             const reason = window.prompt('Alasan libur:') || 'Libur';
-            const dbId = occDbId || await resolveDbOccurrence();
-            await supabase.from('schedule_occurrences').update({ is_holiday: true }).eq('id', dbId);
-            await supabase.from('holidays').insert({ account_id: account.id, occurrence_id: dbId, holiday_date: occ.occurrence_date, day_name: occ.day_name, reason });
-            await loadSupabase();
+            const { data: dbOcc } = await supabase.from('schedule_occurrences').upsert({
+              account_id: account.id, recurring_schedule_id: occ.recurring_schedule_id, occurrence_date: occ.occurrence_date,
+              occurrence_time: occ.occurrence_time, occurrence_end_time: occ.occurrence_end_time || null, day_name: occ.day_name,
+            }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date' }).select().single();
+            if (dbOcc) {
+              await supabase.from('schedule_occurrences').update({ is_holiday: true }).eq('id', dbOcc.id);
+              await supabase.from('holidays').insert({ account_id: account.id, occurrence_id: dbOcc.id, holiday_date: occ.occurrence_date, day_name: occ.day_name, reason });
+              await loadFormData();
+              if (tableVisible) await loadTable();
+            }
           }
           setShowHoliday(false); toast('Jadwal ditandai libur.');
         }}>Simpan</button></>}>
@@ -582,6 +895,23 @@ export default function Absensi() {
             <label className="field"><span>Waktu</span><input className="input" type="time" defaultValue="19:30" /></label>
           </div>
           <div className="banner warn"><span>Peringatan: jika tanggal bertepatan dengan jadwal pengajian umum, Anda dapat memilih jadwal umum tersebut sebagai libur. Tidak otomatis.</span></div>
+        </Modal>
+      )}
+      {showConflicts && (
+        <Modal title="Perbedaan data dengan server" onClose={() => setShowConflicts(false)} foot={<button className="btn" onClick={() => setShowConflicts(false)}>Tutup</button>}>
+          <p className="card-desc">Data di perangkat berbeda dengan data server. Pilih data yang dipertahankan untuk setiap jadwal.</p>
+          {(myConflicts.length ? myConflicts : conflicts).map((op) => (
+            <div className="conflict-row" key={op.id}>
+              <div>
+                <strong>{op.occurrence?.occurrence_date ? formatID(op.occurrence.occurrence_date) : 'Jadwal'}</strong>
+                <p className="hint">Server sudah memiliki data yang berbeda, dibuat setelah perubahan lokal.</p>
+              </div>
+              <div className="conflict-actions">
+                <button className="btn" onClick={async () => { await resolveConflict(op.id, 'server'); await loadFormData(); if (tableVisible) await loadTable(); }}>Gunakan Data Server</button>
+                <button className="btn btn-primary" onClick={async () => { await resolveConflict(op.id, 'local'); await loadFormData(); if (tableVisible) await loadTable(); }}>Gunakan Data Lokal</button>
+              </div>
+            </div>
+          ))}
         </Modal>
       )}
     </div>

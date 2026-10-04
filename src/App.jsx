@@ -83,7 +83,8 @@ function AccountMenu() {
 }
 
 function Header() {
-  const { online, syncState } = useApp();
+  const { online, syncState, pendingCount, retrySync } = useApp();
+  const actionable = pendingCount > 0;
   return (
     <header className="app-header">
       <div className="brand">
@@ -93,10 +94,17 @@ function Header() {
         </span>
       </div>
       <div className="header-right">
-        <span className="status-pill" role="status">
+        <button
+          type="button"
+          className="status-pill"
+          role="status"
+          onClick={() => { if (actionable) retrySync(); }}
+          title={actionable ? `Ada ${pendingCount} perubahan menunggu. Klik untuk sinkron ulang.` : 'Status koneksi'}
+          aria-label={actionable ? `Sinkronisasi tertunda (${pendingCount}). Aktifkan untuk mencoba lagi.` : `Status: ${online ? syncState : 'Offline'}`}
+        >
           <span className={`dot ${online ? (syncState === 'Menyinkronkan' ? 'sync' : 'online') : 'offline'}`} />
-          {online ? (syncState === 'Menyinkronkan' ? 'Menyinkronkan' : 'Online') : 'Offline'}
-        </span>
+          {online ? (syncState === 'Menyinkronkan' ? 'Menyinkronkan' : `Online${actionable ? ` • ${pendingCount}` : ''}`) : `Offline${actionable ? ` • ${pendingCount}` : ''}`}
+        </button>
         <ThemeToggle />
         <AccountMenu />
       </div>

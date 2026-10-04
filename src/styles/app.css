@@ -492,3 +492,79 @@ select.input option,
 [data-theme="dark"] .members-table tbody tr:hover td,
 [data-theme="dark"] .members-table tbody tr:hover td:first-child { background: #14293A; }
 .members-table tr.row-inactive td { color: var(--text-muted); }
+
+/* Header section yang bisa dilipat */
+.collapse-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 36px; padding: 4px 12px; border-radius: var(--radius-pill);
+  border: 1.5px solid var(--border-default); background: var(--bg-surface);
+  color: var(--text-secondary); font-size: 12.5px; font-weight: 700; cursor: pointer;
+  transition: border-color 170ms ease, background-color 170ms ease, transform 170ms ease, box-shadow 170ms ease;
+}
+.collapse-btn:hover { border-color: var(--color-primary-400); background: var(--color-primary-50); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.collapse-btn:active { transform: translateY(0); }
+.collapse-btn:focus-visible { outline: 2px solid var(--color-primary-500); outline-offset: 2px; }
+
+/* Pembedaan tegas Laki-laki vs Perempuan */
+.member-group.male { border-top: 3px solid var(--color-primary-500); }
+.member-group.female { border-top: 3px solid #8B7CF6; }
+.member-group.male .member-group-head {
+  background: var(--color-primary-100); border: 1px solid var(--color-primary-200);
+  border-radius: var(--radius-md); padding: 8px 12px; margin-bottom: 10px;
+}
+.member-group.female .member-group-head {
+  background: #EFEAFF; border: 1px solid #D5CBFA;
+  border-radius: var(--radius-md); padding: 8px 12px; margin-bottom: 10px;
+}
+.member-group.male .member-group-title { color: var(--color-primary-800); }
+.member-group.female .member-group-title { color: #5B4BA8; }
+[data-theme="dark"] .member-group.male .member-group-head { background: #10283A; border-color: #205473; }
+[data-theme="dark"] .member-group.male .member-group-title { color: #9BDCFF; }
+[data-theme="dark"] .member-group.female { border-top-color: #A78BFA; background: #211D38; }
+[data-theme="dark"] .member-group.female .member-group-head { background: #2A2447; border-color: #4C4480; }
+[data-theme="dark"] .member-group.female .member-group-title { color: #CFC4FF; }
+[data-theme="dark"] .member-group.female .member-count { background: #2A2447; border-color: #4C4480; color: #CFC4FF; }
+
+/* Grup + kepala materi */
+.material-group { margin-top: 18px; }
+.material-group-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 12px;
+}
+
+/* Menu utama Admin */
+.menu-grid { display: grid; gap: 12px; grid-template-columns: 1fr; margin-top: 16px; }
+@media (min-width: 860px) { .menu-grid { grid-template-columns: repeat(3, 1fr); } }
+.menu-card {
+  background: var(--bg-surface); border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); padding: 20px;
+  display: flex; flex-direction: column; gap: 4px;
+  transition: border-color 170ms ease, transform 170ms ease, box-shadow 170ms ease;
+}
+.menu-card:hover { border-color: var(--color-primary-300); transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.menu-icon {
+  width: 52px; height: 52px; border-radius: 14px; display: grid; place-items: center;
+  background: var(--color-primary-100); color: var(--color-primary-700); margin-bottom: 8px;
+}
+[data-theme="dark"] .menu-icon { background: #153A52; color: #9BDCFF; }
+.menu-list { margin: 4px 0 14px; padding-left: 18px; color: var(--text-secondary); font-size: 13.5px; display: grid; gap: 2px; }
+@media (min-width: 1024px) { .menu-card { padding: 24px; } .menu-list { font-size: 14.5px; } }
+
+/* Placeholder tabel malas */
+.table-placeholder {
+  border: 1.5px dashed var(--border-default); border-radius: var(--radius-md);
+  padding: 28px 16px; text-align: center; background: var(--bg-surface-secondary);
+  display: grid; justify-items: center;
+}
+
+/* Konflik sinkronisasi */
+.conflict-row {
+  border: 1px solid var(--border-default); border-radius: var(--radius-md);
+  padding: 12px; margin-bottom: 10px; background: var(--bg-surface-secondary);
+  display: grid; gap: 10px;
+}
+.conflict-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Status sinkronisasi yang bisa diklik untuk coba lagi */
+button.status-pill { cursor: pointer; font: inherit; }
+button.status-pill:hover { border-color: var(--color-primary-400); }

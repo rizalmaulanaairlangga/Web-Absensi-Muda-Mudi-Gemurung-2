@@ -1,7 +1,14 @@
 import React, { useState } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
-import { useApp } from '../lib/store.jsx';
+import { useApp, isNetworkError } from '../lib/store.jsx';
 import { supabase } from '../lib/supabaseClient.js';
+
+function loginErrorMessage(error) {
+  if (!navigator.onLine || isNetworkError(error)) {
+    return 'Anda sedang offline. Periksa koneksi internet lalu coba lagi. Data yang tersimpan di perangkat tetap aman.';
+  }
+  return 'Gagal masuk. Periksa email dan kata sandi.';
+}
 
 export default function Login() {
   const { loginGuest, toast, supabaseReady, account, loadingAuth } = useApp();
@@ -15,10 +22,17 @@ export default function Login() {
     e.preventDefault();
     if (!supabaseReady) { toast('Backend belum dikonfigurasi. Gunakan mode tamu untuk mencoba.'); return; }
     if (!email || !password) { toast('Isi email dan kata sandi.'); return; }
+    if (!navigator.onLine) { toast('Anda sedang offline. Sambungkan internet untuk masuk, atau lanjut sebagai tamu untuk melihat data demo.'); return; }
     setBusy(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    let error = null;
+    try {
+      const res = await supabase.auth.signInWithPassword({ email, password });
+      error = res.error;
+    } catch (err) {
+      error = err;
+    }
     setBusy(false);
-    if (error) { toast('Gagal masuk. Periksa email dan kata sandi.'); return; }
+    if (error) { toast(loginErrorMessage(error)); return; }
     toast('Selamat datang.');
     nav('/');
   }
