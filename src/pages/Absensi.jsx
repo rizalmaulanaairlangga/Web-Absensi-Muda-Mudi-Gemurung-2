@@ -510,6 +510,11 @@ export default function Absensi() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [answers, mat]);
 
+  useEffect(() => {
+    if (showEditPicker) loadEditLists();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showEditPicker, editTab, editYm.m, editYm.y]);
+
   function setHadir(id, v) {
     setAnswers((p) => ({ ...p, [id]: v ? { hadir: true } : {} }));
   }
@@ -821,11 +826,6 @@ export default function Absensi() {
     setEditYm({ ...tableYm });
     setShowEditPicker(true);
   }
-
-  useEffect(() => {
-    if (showEditPicker) loadEditLists();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showEditPicker, editTab, editYm.m, editYm.y]);
 
   return (
     <div>
