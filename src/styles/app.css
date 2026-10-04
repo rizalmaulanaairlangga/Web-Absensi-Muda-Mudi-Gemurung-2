@@ -484,6 +484,29 @@ select.input option,
 .mp-month.selected { background: var(--color-primary-500); border-color: var(--color-primary-500); color: #fff; }
 .mp-month:focus-visible { outline: 2px solid var(--color-primary-500); outline-offset: 2px; }
 
+/* Pilihan tambah materi + kepala section */
+.material-empty {
+  border: 1.5px dashed var(--border-default); border-radius: var(--radius-md);
+  padding: 20px 16px; text-align: center; background: var(--bg-surface-secondary);
+  display: grid; justify-items: center;
+}
+.material-picker {
+  border: 1.5px solid var(--border-default); border-radius: var(--radius-md);
+  background: var(--bg-surface); padding: 10px; margin-bottom: 14px;
+  display: grid; gap: 8px;
+}
+.material-pick-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+  padding: 10px 12px; background: var(--bg-surface-secondary);
+  transition: border-color 150ms ease;
+}
+.material-pick-row:hover { border-color: var(--color-primary-300); }
+.material-sec-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+}
+.material-sec-actions { display: inline-flex; gap: 6px; align-items: center; flex: none; }
+
 /* Tabel anggota */
 .members-table tbody tr:nth-child(even) td { background: var(--bg-surface-secondary); }
 .members-table tbody tr:nth-child(even) td:first-child { background: var(--bg-surface-secondary); }

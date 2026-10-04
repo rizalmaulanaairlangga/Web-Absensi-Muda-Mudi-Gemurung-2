@@ -5,7 +5,7 @@ import { idbGet, idbSet } from '../lib/idb.js';
 import { todayJakarta, toISODate, formatID, dayName, dayOfWeek, isWithinWindow, windowOpenAt, canEdit, monthLabel } from '../lib/dates.js';
 import { surahName } from '../lib/quran.js';
 import { DEFAULT_ABSENCE, DEFAULT_STATUS, DEFAULT_HADITH, DEFAULT_FREE, DEFAULT_SPECIAL_TYPES, DEFAULT_SPEAKERS, guestSeed } from '../lib/seed.js';
-import { Modal, Empty, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, ChevronDownIcon, ClockIcon, PlusIcon, CustomSelect, EyeIcon, RefreshIcon } from '../components/ui.jsx';
+import { Modal, Empty, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, ChevronDownIcon, ClockIcon, PlusIcon, CustomSelect, EyeIcon, RefreshIcon, TrashIcon } from '../components/ui.jsx';
 
 function timeRange(start, end) {
   const s = String(start || '').slice(0, 5);
@@ -95,6 +95,28 @@ function occKeyOf(occ) {
   return occ.localKey || occ.id;
 }
 
+const MASTER_TABLES = {
+  speakers: 'speakers',
+  hadith: 'hadith_materials',
+  free: 'free_activity_types',
+  specialTypes: 'special_event_types',
+};
+
+async function loadMastersCache(aid) {
+  if (!aid) return {};
+  return await idbGet(`masters-${aid}`, {});
+}
+
+async function saveMastersCache(aid, patch) {
+  if (!aid) return {};
+  const cur = await idbGet(`masters-${aid}`, {});
+  const next = { ...cur, ...patch, savedAt: Date.now() };
+  await idbSet(`masters-${aid}`, next);
+  return next;
+}
+
+const MAT_OFF = { quran: false, hadith: false, nasehat: false, free: false };
+
 export default function Absensi() {
   const {
     account, isGuest, online, toast, enqueue, supabaseReady,
@@ -103,6 +125,8 @@ export default function Absensi() {
   const now = todayJakarta();
   const [tableYm, setTableYm] = useState({ y: now.getFullYear(), m: now.getMonth() + 1 });
   const [store, setStore] = useState(null);
+  const storeRef = React.useRef(null);
+  storeRef.current = store;
   const [formOccs, setFormOccs] = useState([]);
   const [selectedKey, setSelectedKey] = useState(null);
   const [answers, setAnswers] = useState({});
@@ -112,13 +136,57 @@ export default function Absensi() {
   const [saving, setSaving] = useState(false);
   const [maleOpen, setMaleOpen] = useState(true);
   const [femaleOpen, setFemaleOpen] = useState(true);
-  const [materialsOpen, setMaterialsOpen] = useState(true);
   const [tableVisible, setTableVisible] = useState(false);
   const [tableData, setTableData] = useState(null);
   const [tableLoading, setTableLoading] = useState(false);
   const [showConflicts, setShowConflicts] = useState(false);
-  const [mat, setMat] = useState({ quran: true, hadith: false, nasehat: true, free: false, surah: '36', ayat: '1-10', pemateriQ: '', hadithId: '', halaman: '', pemateriH: '', nasehatBy: '', freeId: '', freeBy: '' });
+  const [mat, setMat] = useState({ ...MAT_OFF, surah: '', ayat: '', pemateriQ: '', hadithId: '', halaman: '', pemateriH: '', nasehatBy: '', freeId: '', freeBy: '' });
+  const [collapsedSecs, setCollapsedSecs] = useState({ quran: false, hadith: false, nasehat: false, free: false });
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [specialType, setSpecialType] = useState('');
+
+  useEffect(() => {
+    if (!showSpecial || !account || isGuest || !supabaseReady) return;
+    if ((storeRef.current?.specialTypes || []).length) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    (async () => {
+      try {
+        const { data } = await supabase.from('special_event_types').select('*').eq('account_id', account.id).order('name');
+        const list = data || [];
+        setStore((p) => (p ? { ...p, specialTypes: list } : p));
+        await saveMastersCache(account.id, { specialTypes: list });
+      } catch { /* abaikan */ }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSpecial]);
+
+  async function ensureMasters(keys) {
+    if (!account || isGuest || !supabaseReady) return;
+    const aid = account.id;
+    const need = keys.filter((k) => !(storeRef.current?.[k] || []).length);
+    if (!need.length) return;
+    const cached = await loadMastersCache(aid);
+    const fromCache = {};
+    const stillNeed = [];
+    need.forEach((k) => {
+      if ((cached[k] || []).length) fromCache[k] = cached[k];
+      else stillNeed.push(k);
+    });
+    if (Object.keys(fromCache).length) {
+      setStore((p) => (p ? { ...p, ...fromCache } : p));
+    }
+    if (!stillNeed.length) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    try {
+      const fetched = {};
+      await Promise.all(stillNeed.map(async (k) => {
+        const { data } = await supabase.from(MASTER_TABLES[k]).select('*').eq('account_id', aid).order('name');
+        fetched[k] = data || [];
+      }));
+      setStore((p) => (p ? { ...p, ...fetched } : p));
+      await saveMastersCache(aid, fetched);
+    } catch { /* abaikan, dropdown menampilkan status kosong */ }
+  }
 
   useEffect(() => {
     (async () => {
@@ -150,15 +218,11 @@ export default function Absensi() {
   async function loadFormData() {
     const aid = account.id;
     try {
-      const [mem, abs, sch, sett, hd, fr, sp, ktp] = await Promise.all([
+      const [mem, abs, sch, sett] = await Promise.all([
         supabase.from('members').select('*').eq('account_id', aid).order('nickname'),
         supabase.from('absence_types').select('*').eq('account_id', aid),
         supabase.from('recurring_schedules').select('*').eq('account_id', aid).eq('active', true),
         supabase.from('app_settings').select('*').eq('account_id', aid).maybeSingle(),
-        supabase.from('hadith_materials').select('*').eq('account_id', aid),
-        supabase.from('free_activity_types').select('*').eq('account_id', aid),
-        supabase.from('speakers').select('*').eq('account_id', aid),
-        supabase.from('special_event_types').select('*').eq('account_id', aid),
       ]);
       let schedules = (sch.data || []).map((s) => ({
         id: s.id,
@@ -168,13 +232,7 @@ export default function Absensi() {
         active: s.active,
       }));
       let absenceTypes = abs.data || [];
-      let speakers = sp.data || [];
-      let hadith = hd.data || [];
-      let free = fr.data || [];
-      let specialTypes = ktp.data || [];
-      let reseeded = false;
       if (schedules.length === 0) {
-        reseeded = true;
         const seed = [
           { day_of_week: 3, event_time: '19:30', end_time: '21:30' },
           { day_of_week: 5, event_time: '19:30', end_time: '21:30' },
@@ -183,32 +241,46 @@ export default function Absensi() {
           const { data } = await supabase.from('recurring_schedules').insert({ account_id: aid, day_of_week: s.day_of_week, event_time: s.event_time, end_time: s.end_time }).select().single();
           if (data) schedules.push({ id: data.id, day_of_week: data.day_of_week, event_time: String(data.event_time).slice(0, 5), end_time: data.end_time ? String(data.end_time).slice(0, 5) : null, active: true });
         }
-        if ((abs.data || []).length === 0) for (const n of DEFAULT_ABSENCE) await supabase.from('absence_types').insert({ account_id: aid, name: n });
+        if ((abs.data || []).length === 0) {
+          for (const n of DEFAULT_ABSENCE) await supabase.from('absence_types').insert({ account_id: aid, name: n });
+          const { data: absFresh } = await supabase.from('absence_types').select('*').eq('account_id', aid);
+          if (absFresh?.length) absenceTypes = absFresh;
+        }
         for (const n of DEFAULT_STATUS) {
           const { data: ex } = await supabase.from('member_statuses').select('id').eq('account_id', aid).eq('name', n).maybeSingle();
           if (!ex) await supabase.from('member_statuses').insert({ account_id: aid, name: n });
         }
-        if ((hd.data || []).length === 0) for (const n of DEFAULT_HADITH) await supabase.from('hadith_materials').insert({ account_id: aid, name: n });
-        if ((fr.data || []).length === 0) for (const n of DEFAULT_FREE) await supabase.from('free_activity_types').insert({ account_id: aid, name: n });
-        if ((sp.data || []).length === 0) for (const n of DEFAULT_SPEAKERS) await supabase.from('speakers').insert({ account_id: aid, name: n });
-        if ((ktp.data || []).length === 0) for (const n of DEFAULT_SPECIAL_TYPES) await supabase.from('special_event_types').insert({ account_id: aid, name: n });
+        for (const n of DEFAULT_HADITH) {
+          const { data: ex } = await supabase.from('hadith_materials').select('id').eq('account_id', aid).eq('name', n).maybeSingle();
+          if (!ex) await supabase.from('hadith_materials').insert({ account_id: aid, name: n });
+        }
+        for (const n of DEFAULT_FREE) {
+          const { data: ex } = await supabase.from('free_activity_types').select('id').eq('account_id', aid).eq('name', n).maybeSingle();
+          if (!ex) await supabase.from('free_activity_types').insert({ account_id: aid, name: n });
+        }
+        for (const n of DEFAULT_SPEAKERS) {
+          const { data: ex } = await supabase.from('speakers').select('id').eq('account_id', aid).eq('name', n).maybeSingle();
+          if (!ex) await supabase.from('speakers').insert({ account_id: aid, name: n });
+        }
+        for (const n of DEFAULT_SPECIAL_TYPES) {
+          const { data: ex } = await supabase.from('special_event_types').select('id').eq('account_id', aid).eq('name', n).maybeSingle();
+          if (!ex) await supabase.from('special_event_types').insert({ account_id: aid, name: n });
+        }
       }
       const cands = formCandidates(schedules);
       const months = [...new Set(cands.map((c) => c.occurrence_date.slice(0, 7)))];
-      for (const ymStr of months) {
+      await Promise.all(months.map(async (ymStr) => {
         const [yy, mm] = ymStr.split('-').map(Number);
         const virt = occurrencesForMonth(schedules, yy, mm);
-        for (const o of virt) {
-          await supabase.from('schedule_occurrences').upsert({
-            account_id: aid,
-            recurring_schedule_id: o.recurring_schedule_id,
-            occurrence_date: o.occurrence_date,
-            occurrence_time: o.occurrence_time,
-            occurrence_end_time: o.occurrence_end_time,
-            day_name: o.day_name,
-          }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date', ignoreDuplicates: true });
-        }
-      }
+        await Promise.all(virt.map((o) => supabase.from('schedule_occurrences').upsert({
+          account_id: aid,
+          recurring_schedule_id: o.recurring_schedule_id,
+          occurrence_date: o.occurrence_date,
+          occurrence_time: o.occurrence_time,
+          occurrence_end_time: o.occurrence_end_time,
+          day_name: o.day_name,
+        }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date', ignoreDuplicates: true })));
+      }));
       const minDate = cands.length ? cands[0].occurrence_date : toISODate(todayJakarta());
       const maxDate = cands.length ? cands[cands.length - 1].occurrence_date : toISODate(todayJakarta());
       const occDb = await supabase.from('schedule_occurrences').select('*').eq('account_id', aid).gte('occurrence_date', minDate).lte('occurrence_date', maxDate).order('occurrence_date');
@@ -234,22 +306,7 @@ export default function Absensi() {
         holMap = Object.fromEntries((holDb.data || []).filter((h) => h.account_id === aid).map((h) => [h.occurrence_id, h]));
       }
       if (!absenceTypes.length) absenceTypes = DEFAULT_ABSENCE.map((n) => ({ name: n }));
-      if (reseeded) {
-        try {
-          const [rAbs, rSp, rHd, rFr, rKt] = await Promise.all([
-            supabase.from('absence_types').select('*').eq('account_id', aid),
-            supabase.from('speakers').select('*').eq('account_id', aid),
-            supabase.from('hadith_materials').select('*').eq('account_id', aid),
-            supabase.from('free_activity_types').select('*').eq('account_id', aid),
-            supabase.from('special_event_types').select('*').eq('account_id', aid),
-          ]);
-          if (rAbs.data?.length) absenceTypes = rAbs.data;
-          if (rSp.data?.length) speakers = rSp.data;
-          if (rHd.data?.length) hadith = rHd.data;
-          if (rFr.data?.length) free = rFr.data;
-          if (rKt.data?.length) specialTypes = rKt.data;
-        } catch { /* gunakan data awal */ }
-      }
+      const cachedMasters = await loadMastersCache(aid);
       const s = {
         accountId: aid,
         members: (mem.data || []).map((m) => ({ id: m.id, full_name: m.full_name, nickname: m.nickname, gender: m.gender, joined_at: m.joined_at, active: m.active })),
@@ -259,10 +316,10 @@ export default function Absensi() {
         occurrences: [],
         attendance: attMap,
         holidays: holMap,
-        speakers,
-        hadith,
-        free,
-        specialTypes,
+        speakers: cachedMasters.speakers || [],
+        hadith: cachedMasters.hadith || [],
+        free: cachedMasters.free || [],
+        specialTypes: cachedMasters.specialTypes || [],
       };
       setStore(s);
       setFormOccs(formList);
@@ -279,7 +336,7 @@ export default function Absensi() {
     } catch (e) {
       const netErr = !navigator.onLine || /failed to fetch|network|timeout/i.test(String(e?.message || e || ''));
       if (netErr) {
-        const snap = await loadSnapshot(account.id);
+        const [snap, mcached] = await Promise.all([loadSnapshot(account.id), loadMastersCache(account.id)]);
         if (snap && snap.members) {
           const cands = formCandidates(snap.schedules || []);
           const byKey = new Map((snap.occurrences || []).map((o) => [o.localKey || `${o.recurring_schedule_id}|${o.occurrence_date}`, o]));
@@ -288,7 +345,10 @@ export default function Absensi() {
             accountId: account.id,
             members: snap.members, absenceTypes: snap.absenceTypes || [], schedules: snap.schedules || [],
             lockHours: snap.lockHours ?? 24, occurrences: [], attendance: snap.attendance || {}, holidays: snap.holidays || {},
-            speakers: snap.speakers || [], hadith: snap.hadith || [], free: snap.free || [], specialTypes: snap.specialTypes || [],
+            speakers: mcached.speakers?.length ? mcached.speakers : (snap.speakers || []),
+            hadith: mcached.hadith?.length ? mcached.hadith : (snap.hadith || []),
+            free: mcached.free?.length ? mcached.free : (snap.free || []),
+            specialTypes: mcached.specialTypes?.length ? mcached.specialTypes : (snap.specialTypes || []),
             offline: true,
           });
           setFormOccs(formList);
@@ -426,12 +486,11 @@ export default function Absensi() {
             if ((matDb.data || []).length > 0) {
               const byKind = {};
               matDb.data.forEach((r) => { byKind[r.kind] = r; });
-              setMat((p) => ({
-                ...p,
-                quran: Boolean(byKind.QURAN) || p.quran,
-                surah: byKind.QURAN?.quran_surah_number ? String(byKind.QURAN.quran_surah_number) : p.surah,
-                ayat: byKind.QURAN?.ayat_range || p.ayat,
-                pemateriQ: byKind.QURAN?.speaker_name_snapshot || p.pemateriQ,
+              setMat({
+                quran: Boolean(byKind.QURAN),
+                surah: byKind.QURAN?.quran_surah_number ? String(byKind.QURAN.quran_surah_number) : '',
+                ayat: byKind.QURAN?.ayat_range || '',
+                pemateriQ: byKind.QURAN?.speaker_name_snapshot || '',
                 hadith: Boolean(byKind.HADITH),
                 hadithId: byKind.HADITH?.hadith_name_snapshot || '',
                 halaman: byKind.HADITH?.hadith_page || '',
@@ -441,7 +500,9 @@ export default function Absensi() {
                 free: Boolean(byKind.FREE),
                 freeId: byKind.FREE?.free_activity_name_snapshot || '',
                 freeBy: byKind.FREE?.speaker_name_snapshot || '',
-              }));
+              });
+              setCollapsedSecs({ quran: false, hadith: false, nasehat: false, free: false });
+              setPickerOpen(false);
             }
           } catch { /* abaikan, gunakan state lokal */ }
         }
@@ -644,6 +705,54 @@ export default function Absensi() {
     );
   }
 
+  const MAT_DEFS = [
+    { key: 'quran', title: 'Al-Quran', desc: 'Surat, ayat, dan pemateri', masters: ['speakers'] },
+    { key: 'hadith', title: 'Hadist', desc: 'Kitab, halaman, dan pemateri', masters: ['hadith', 'speakers'] },
+    { key: 'nasehat', title: 'Nasehat', desc: 'Penyampai nasehat', masters: ['speakers'] },
+    { key: 'free', title: 'Materi / Kegiatan Bebas', desc: 'Kegiatan dan penanggung jawab', masters: ['free', 'speakers'] },
+  ];
+  const activeMats = MAT_DEFS.filter((d) => mat[d.key]);
+  const inactiveMats = MAT_DEFS.filter((d) => !mat[d.key]);
+
+  function sectionHasData(key) {
+    if (key === 'quran') return Boolean(mat.surah || mat.ayat || mat.pemateriQ);
+    if (key === 'hadith') return Boolean(mat.hadithId || mat.halaman || mat.pemateriH);
+    if (key === 'nasehat') return Boolean(mat.nasehatBy);
+    if (key === 'free') return Boolean(mat.freeId || mat.freeBy);
+    return false;
+  }
+
+  function matSummary(key) {
+    if (key === 'quran') {
+      if (!mat.surah && !mat.ayat) return 'Belum diisi';
+      return `QS ${mat.surah || '-'}${surah ? ` • ${surah}` : ''}${mat.ayat ? ` • ${mat.ayat}` : ''}`;
+    }
+    if (key === 'hadith') return mat.hadithId ? `${mat.hadithId}${mat.halaman ? ` • hal ${mat.halaman}` : ''}` : 'Belum diisi';
+    if (key === 'nasehat') return mat.nasehatBy || 'Belum diisi';
+    if (key === 'free') return mat.freeId || 'Belum diisi';
+    return '';
+  }
+
+  function activateSection(key) {
+    const def = MAT_DEFS.find((d) => d.key === key);
+    setMat((p) => ({ ...p, [key]: true }));
+    setCollapsedSecs((p) => ({ ...p, [key]: false }));
+    if (def) ensureMasters(def.masters);
+    if (inactiveMats.length <= 1) setPickerOpen(false);
+  }
+
+  function deactivateSection(key, title) {
+    if (sectionHasData(key) && !window.confirm(`Hapus materi ${title} dari pengajian ini? Isian yang sudah ada akan dibuang.`)) return;
+    const clear = { quran: { surah: '', ayat: '', pemateriQ: '' }, hadith: { hadithId: '', halaman: '', pemateriH: '' }, nasehat: { nasehatBy: '' }, free: { freeId: '', freeBy: '' } }[key] || {};
+    setMat((p) => ({ ...p, [key]: false, ...clear }));
+  }
+
+  function resetMaterials() {
+    setMat({ ...MAT_OFF, surah: '', ayat: '', pemateriQ: '', hadithId: '', halaman: '', pemateriH: '', nasehatBy: '', freeId: '', freeBy: '' });
+    setCollapsedSecs({ quran: false, hadith: false, nasehat: false, free: false });
+    setPickerOpen(false);
+  }
+
   return (
     <div>
       {isGuest && <div className="banner info"><span>Mode Tamu. Data yang digunakan adalah data demo dan akan dihapus otomatis.</span></div>}
@@ -711,24 +820,62 @@ export default function Absensi() {
 
             <div className="material-group">
               <div className="material-group-head">
-                <h3 style={{ margin: 0 }}>Materi Pengajian</h3>
-                <button
-                  type="button"
-                  className="collapse-btn"
-                  aria-expanded={materialsOpen}
-                  aria-label={materialsOpen ? 'Sembunyikan materi pengajian' : 'Tampilkan materi pengajian'}
-                  onClick={() => setMaterialsOpen((v) => !v)}
-                >
-                  {materialsOpen ? <ChevronUpIcon /> : <ChevronDownIcon />}
-                  <span>{materialsOpen ? 'Sembunyikan' : 'Tampilkan'}</span>
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <h3 style={{ margin: 0 }}>Materi Pengajian</h3>
+                  {activeMats.length > 0 && <span className="member-count">{activeMats.length} aktif</span>}
+                </div>
+                {inactiveMats.length > 0 && activeMats.length > 0 && !pickerOpen && (
+                  <button type="button" className="collapse-btn" onClick={() => setPickerOpen(true)} aria-label="Tambah materi lain">
+                    <PlusIcon /> <span>Tambah</span>
+                  </button>
+                )}
               </div>
-              {!materialsOpen && <p className="hint" style={{ margin: '8px 0 0' }}>Materi disembunyikan. Isian tetap tersimpan.</p>}
-              {materialsOpen && (
-                <>
-                  <div className={`material-card${mat.quran ? '' : ' off'}`}>
-                    <div className="material-toggle"><span>Al-Quran</span><label className="switch"><input type="checkbox" checked={mat.quran} onChange={(e) => setMat({ ...mat, quran: e.target.checked })} aria-label="Aktifkan materi Al-Quran" /><span className="track" /></label></div>
-                    {mat.quran && (
+              {activeMats.length === 0 && !pickerOpen && (
+                <div className="material-empty">
+                  <p className="card-desc" style={{ marginBottom: 12 }}>Belum ada materi yang dipilih untuk pengajian ini.</p>
+                  <button type="button" className="btn" onClick={() => setPickerOpen(true)}><PlusIcon /> Tambah Materi</button>
+                </div>
+              )}
+              {pickerOpen && inactiveMats.length > 0 && (
+                <div className="material-picker" role="group" aria-label="Pilih materi">
+                  {inactiveMats.map((d) => (
+                    <div className="material-pick-row" key={d.key}>
+                      <div>
+                        <strong>{d.title}</strong>
+                        <div className="hint">{d.desc}</div>
+                      </div>
+                      <button type="button" className="btn" style={{ minHeight: 40 }} onClick={() => activateSection(d.key)} aria-label={`Tambah materi ${d.title}`}>
+                        <PlusIcon /> Tambah
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" className="btn btn-ghost btn-block" style={{ marginTop: 8 }} onClick={() => setPickerOpen(false)}>Tutup</button>
+                </div>
+              )}
+                  {mat.quran && (
+                  <div className="material-card">
+                    <div className="material-sec-head">
+                      <div>
+                        <strong>Al-Quran</strong>
+                        <div className="hint">{matSummary('quran')}</div>
+                      </div>
+                      <div className="material-sec-actions">
+                        <button
+                          type="button"
+                          className="collapse-btn"
+                          aria-expanded={!collapsedSecs.quran}
+                          aria-label={collapsedSecs.quran ? 'Tampilkan materi Al-Quran' : 'Sembunyikan materi Al-Quran'}
+                          onClick={() => setCollapsedSecs((p) => ({ ...p, quran: !p.quran }))}
+                        >
+                          {collapsedSecs.quran ? <ChevronDownIcon /> : <ChevronUpIcon />}
+                          <span>{collapsedSecs.quran ? 'Tampilkan' : 'Sembunyikan'}</span>
+                        </button>
+                        <button type="button" className="icon-btn danger" aria-label="Hapus materi Al-Quran" title="Hapus materi Al-Quran" onClick={() => deactivateSection('quran', 'Al-Quran')}>
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    </div>
+                    {!collapsedSecs.quran && (
                       <div className="material-card-body">
                         <div className="row cols-3">
                           <label className="field"><span>Nomor Surat</span><input className="input" inputMode="numeric" value={mat.surah} onChange={(e) => setMat({ ...mat, surah: e.target.value })} /></label>
@@ -744,9 +891,31 @@ export default function Absensi() {
                       </div>
                     )}
                   </div>
-                  <div className={`material-card${mat.hadith ? '' : ' off'}`}>
-                    <div className="material-toggle"><span>Hadist</span><label className="switch"><input type="checkbox" checked={mat.hadith} onChange={(e) => setMat({ ...mat, hadith: e.target.checked })} aria-label="Aktifkan materi Hadist" /><span className="track" /></label></div>
-                    {mat.hadith && (
+                  )}
+                  {mat.hadith && (
+                  <div className="material-card">
+                    <div className="material-sec-head">
+                      <div>
+                        <strong>Hadist</strong>
+                        <div className="hint">{matSummary('hadith')}</div>
+                      </div>
+                      <div className="material-sec-actions">
+                        <button
+                          type="button"
+                          className="collapse-btn"
+                          aria-expanded={!collapsedSecs.hadith}
+                          aria-label={collapsedSecs.hadith ? 'Tampilkan materi Hadist' : 'Sembunyikan materi Hadist'}
+                          onClick={() => setCollapsedSecs((p) => ({ ...p, hadith: !p.hadith }))}
+                        >
+                          {collapsedSecs.hadith ? <ChevronDownIcon /> : <ChevronUpIcon />}
+                          <span>{collapsedSecs.hadith ? 'Tampilkan' : 'Sembunyikan'}</span>
+                        </button>
+                        <button type="button" className="icon-btn danger" aria-label="Hapus materi Hadist" title="Hapus materi Hadist" onClick={() => deactivateSection('hadith', 'Hadist')}>
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    </div>
+                    {!collapsedSecs.hadith && (
                       <div className="material-card-body">
                         <div className="row cols-2">
                           <label className="field"><span>Hadist</span>
@@ -764,9 +933,31 @@ export default function Absensi() {
                       </div>
                     )}
                   </div>
-                  <div className={`material-card${mat.nasehat ? '' : ' off'}`}>
-                    <div className="material-toggle"><span>Nasehat</span><label className="switch"><input type="checkbox" checked={mat.nasehat} onChange={(e) => setMat({ ...mat, nasehat: e.target.checked })} aria-label="Aktifkan materi Nasehat" /><span className="track" /></label></div>
-                    {mat.nasehat && (
+                  )}
+                  {mat.nasehat && (
+                  <div className="material-card">
+                    <div className="material-sec-head">
+                      <div>
+                        <strong>Nasehat</strong>
+                        <div className="hint">{matSummary('nasehat')}</div>
+                      </div>
+                      <div className="material-sec-actions">
+                        <button
+                          type="button"
+                          className="collapse-btn"
+                          aria-expanded={!collapsedSecs.nasehat}
+                          aria-label={collapsedSecs.nasehat ? 'Tampilkan materi Nasehat' : 'Sembunyikan materi Nasehat'}
+                          onClick={() => setCollapsedSecs((p) => ({ ...p, nasehat: !p.nasehat }))}
+                        >
+                          {collapsedSecs.nasehat ? <ChevronDownIcon /> : <ChevronUpIcon />}
+                          <span>{collapsedSecs.nasehat ? 'Tampilkan' : 'Sembunyikan'}</span>
+                        </button>
+                        <button type="button" className="icon-btn danger" aria-label="Hapus materi Nasehat" title="Hapus materi Nasehat" onClick={() => deactivateSection('nasehat', 'Nasehat')}>
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    </div>
+                    {!collapsedSecs.nasehat && (
                       <div className="material-card-body">
                         <label className="field"><span>Penyampai nasehat</span>
                           <CustomSelect value={mat.nasehatBy} ariaLabel="Penyampai nasehat" placeholder="Pilih penyampai"
@@ -776,9 +967,31 @@ export default function Absensi() {
                       </div>
                     )}
                   </div>
-                  <div className={`material-card${mat.free ? '' : ' off'}`}>
-                    <div className="material-toggle"><span>Materi / Kegiatan Bebas</span><label className="switch"><input type="checkbox" checked={mat.free} onChange={(e) => setMat({ ...mat, free: e.target.checked })} aria-label="Aktifkan materi bebas" /><span className="track" /></label></div>
-                    {mat.free && (
+                  )}
+                  {mat.free && (
+                  <div className="material-card">
+                    <div className="material-sec-head">
+                      <div>
+                        <strong>Materi / Kegiatan Bebas</strong>
+                        <div className="hint">{matSummary('free')}</div>
+                      </div>
+                      <div className="material-sec-actions">
+                        <button
+                          type="button"
+                          className="collapse-btn"
+                          aria-expanded={!collapsedSecs.free}
+                          aria-label={collapsedSecs.free ? 'Tampilkan materi bebas' : 'Sembunyikan materi bebas'}
+                          onClick={() => setCollapsedSecs((p) => ({ ...p, free: !p.free }))}
+                        >
+                          {collapsedSecs.free ? <ChevronDownIcon /> : <ChevronUpIcon />}
+                          <span>{collapsedSecs.free ? 'Tampilkan' : 'Sembunyikan'}</span>
+                        </button>
+                        <button type="button" className="icon-btn danger" aria-label="Hapus materi bebas" title="Hapus materi bebas" onClick={() => deactivateSection('free', 'Materi/Kegiatan Bebas')}>
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    </div>
+                    {!collapsedSecs.free && (
                       <div className="material-card-body">
                         <div className="row cols-2">
                           <label className="field"><span>Kegiatan</span>
@@ -795,12 +1008,11 @@ export default function Absensi() {
                       </div>
                     )}
                   </div>
-                </>
-              )}
+                  )}
             </div>
 
             <div className="actions">
-              <button className="btn btn-danger" onClick={() => { if (window.confirm('Hapus draf absensi ini? Semua jawaban sementara pada form jadwal ini akan dihapus dan tidak bisa dikembalikan.')) { setAnswers({}); } }}>Reset Form</button>
+              <button className="btn btn-danger" onClick={() => { if (window.confirm('Hapus draf absensi ini? Semua jawaban sementara dan isian materi pada form jadwal ini akan dihapus dan tidak bisa dikembalikan.')) { setAnswers({}); resetMaterials(); } }}>Reset Form</button>
               <button className="btn btn-primary" disabled={saving || !windowOpen} onClick={onSave}>{saving ? 'Menyimpan...' : editing ? 'Simpan Perubahan' : 'Simpan Absensi'}</button>
             </div>
             {editing && <div style={{ display: 'flex', gap: 8, marginTop: 10 }}><button className="btn" onClick={() => setEditing(false)}>Batal</button></div>}
