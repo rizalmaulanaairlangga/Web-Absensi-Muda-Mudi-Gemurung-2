@@ -266,7 +266,7 @@ export function AppProvider({ children }) {
 
   async function persistQueue(q) {
     queueRef.current = q;
-    setQueue(q);
+    setQueue((prev) => (JSON.stringify(prev) === JSON.stringify(q) ? prev : q));
     await idbSet(QUEUE_KEY, q);
     updateSyncState(q);
   }
@@ -359,7 +359,7 @@ export function AppProvider({ children }) {
     return occ.id;
   }
 
-  async function processQueue() {
+  async function processQueue(manual = false) {
     if (syncingRef.current || !supabase || !isSupabaseConfigured) return;
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
     const actionable = queueRef.current.filter((o) => o.status === 'pending' || o.status === 'failed');
@@ -382,7 +382,7 @@ export function AppProvider({ children }) {
         if (e && e.conflict) {
           await markOp(op.id, { status: 'conflict', serverRows: e.serverRows || [], dbId: e.dbId || null });
         } else if (isNetworkError(e)) {
-          await markOp(op.id, { status: 'pending' });
+          await markOp(op.id, { status: 'pending', retry: (current.retry || 0) + 1 });
           break;
         } else {
           await markOp(op.id, { status: 'failed', error: String(e?.message || e || 'gagal').slice(0, 200) });
@@ -397,6 +397,9 @@ export function AppProvider({ children }) {
     if (conflicts > 0) toast('Ada data yang perlu perhatian sebelum sinkron.');
     else if (synced > 0 && remaining.length === 0) toast('Semua perubahan telah tersinkron.');
     else if (synced > 0) toast('Sebagian perubahan tersinkron.');
+    if (!manual && onlineRef.current && remaining.some((o) => o.status === 'pending' && (o.retry || 0) < 3)) {
+      setTimeout(() => { if (!syncingRef.current) void processQueue(); }, 3000);
+    }
   }
 
   async function enqueue(op) {
@@ -432,9 +435,11 @@ export function AppProvider({ children }) {
       toast('Anda sedang offline. Data tetap tersimpan dan akan dikirim saat koneksi kembali.');
       return;
     }
-    await processQueue();
+    const reset = queueRef.current.map((o) => (o.status === 'pending' || o.status === 'failed' ? { ...o, retry: 0 } : o));
+    await persistQueue(reset);
+    await processQueue(true);
   }
-  async function trySync() { await retrySync(); }
+  async function trySync() { await processQueue(true); }
 
   async function saveSnapshot(accountId, snap) {
     if (!accountId) return;
@@ -465,12 +470,12 @@ export function AppProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    if (online && queueRef.current.some((o) => o.status === 'pending' || o.status === 'failed')) {
+    if (online && queue.some((o) => o.status === 'pending' || o.status === 'failed')) {
       const t = setTimeout(() => { void processQueue(); }, 1500);
       return () => clearTimeout(t);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [online, lastSyncAt]);
+  }, [online, queue, lastSyncAt]);
 
   async function loginGuest() {
     const accountId = uid('guest');
