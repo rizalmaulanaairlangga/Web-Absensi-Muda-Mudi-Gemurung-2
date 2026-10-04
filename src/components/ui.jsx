@@ -193,8 +193,8 @@ function ChevronDownIcon({ size = 16 }) {
 }
 
 export function CustomSelect({ value, onChange, options = [], placeholder = 'Pilih...', ariaLabel, disabled = false, className = '' }) {
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(-1);
+  const [open, setOpen] = React.useState(false);
+  const [active, setActive] = React.useState(-1);
   const rootRef = React.useRef(null);
   const rawId = React.useId();
   const safeId = String(rawId).replace(/[^a-zA-Z0-9]/g, '');
@@ -290,8 +290,8 @@ export function CustomSelect({ value, onChange, options = [], placeholder = 'Pil
 const ID_MONTHS = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
 
 export function MonthPicker({ y, m, onChange, ariaLabel = 'Pilih bulan dan tahun' }) {
-  const [open, setOpen] = useState(false);
-  const [year, setYear] = useState(y);
+  const [open, setOpen] = React.useState(false);
+  const [year, setYear] = React.useState(y);
   const rootRef = React.useRef(null);
 
   React.useEffect(() => { if (!open) setYear(y); }, [y, open ]);
