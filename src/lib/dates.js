@@ -29,6 +29,14 @@ export function dayOfWeek(dateStr) {
 export function monthLabel(y, m) {
   return `${MONTHS[m-1]} ${y}`;
 }
+export function scheduleStatus({ dateISO, submitted, holiday, todayISO }) {
+  if (holiday) return 'holiday';
+  if (submitted) return 'done';
+  if (!dateISO) return 'future';
+  if (dateISO < todayISO) return 'missing';
+  if (dateISO === todayISO) return 'today';
+  return 'future';
+}
 export function formatDateShortID(dateStr) {
   if (!dateStr) return '-';
   const d = new Date(dateStr + (dateStr.length === 10 ? 'T00:00:00' : ''));

@@ -3,7 +3,7 @@ import { useApp } from '../lib/store.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { idbGet } from '../lib/idb.js';
 import { todayJakarta, monthLabel, formatID } from '../lib/dates.js';
-import { BarChart, Empty, CustomSelect, MonthPicker } from '../components/ui.jsx';
+import { BarChart, Empty, CustomSelect, MonthPicker, StatusBadge } from '../components/ui.jsx';
 import { exportWorkbook } from '../lib/exportExcel.js';
 
 const EXPORT_OPTS = [
@@ -211,11 +211,11 @@ export default function Laporan() {
       <div className="grid-2">
         <div className="card">
           <h3 className="card-title">Sering Alpha</h3>
-          {calc.freqAlpha.length ? calc.freqAlpha.map((m) => <div className="admin-item" key={m.id}><span>{m.nickname}</span><span className="badge red">{m.alpha} Alpha</span></div>) : <p className="hint">Tidak ada.</p>}
+          {calc.freqAlpha.length ? calc.freqAlpha.map((m) => <div className="admin-item" key={m.id}><span>{m.nickname}</span><StatusBadge kind="alpha">{m.alpha} Alpha</StatusBadge></div>) : <p className="hint">Tidak ada.</p>}
         </div>
         <div className="card">
           <h3 className="card-title">Sering Izin</h3>
-          {calc.freqIzin.length ? calc.freqIzin.map((m) => <div className="admin-item" key={m.id}><span>{m.nickname}</span><span className="badge amber">{m.izin} Izin</span></div>) : <p className="hint">Tidak ada.</p>}
+          {calc.freqIzin.length ? calc.freqIzin.map((m) => <div className="admin-item" key={m.id}><span>{m.nickname}</span><StatusBadge kind="izin">{m.izin} Izin</StatusBadge></div>) : <p className="hint">Tidak ada.</p>}
         </div>
       </div>
 

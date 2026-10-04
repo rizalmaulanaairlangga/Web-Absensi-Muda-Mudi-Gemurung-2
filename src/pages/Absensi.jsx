@@ -6,10 +6,10 @@ import { loadMastersCache, saveMastersCache, ensureMasterLists } from '../lib/ma
 import { SpecialEventModal, SpecialDetail } from '../components/SpecialEvent.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { idbGet, idbSet } from '../lib/idb.js';
-import { todayJakarta, toISODate, formatID, dayName, dayOfWeek, isWithinWindow, windowOpenAt, canEdit, monthLabel } from '../lib/dates.js';
+import { todayJakarta, toISODate, formatID, dayName, dayOfWeek, isWithinWindow, windowOpenAt, canEdit, monthLabel, scheduleStatus } from '../lib/dates.js';
 import { surahName } from '../lib/quran.js';
 import { DEFAULT_ABSENCE, DEFAULT_STATUS, DEFAULT_HADITH, DEFAULT_FREE, DEFAULT_SPECIAL_TYPES, DEFAULT_SPEAKERS, guestSeed } from '../lib/seed.js';
-import { Modal, Empty, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, ChevronDownIcon, ClockIcon, PlusIcon, CustomSelect, EyeIcon, RefreshIcon, TrashIcon, PencilIcon, MonthPicker } from '../components/ui.jsx';
+import { Modal, Empty, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, ChevronDownIcon, ClockIcon, PlusIcon, CustomSelect, EyeIcon, RefreshIcon, TrashIcon, PencilIcon, MonthPicker, StatusBadge } from '../components/ui.jsx';
 import MemberRow from '../components/MemberRow.jsx';
 
 function timeRange(start, end) {
@@ -1137,7 +1137,10 @@ export default function Absensi() {
             ) : (
               <div className="table-wrap">
                 <table className="att">
-                  <thead><tr><th>Nama</th>{tableData.occurrences.map((o) => <th key={o.id}>{o.occurrence_date.slice(8, 10)}<br />{String(o.occurrence_time).slice(0, 5)}</th>)}</tr></thead>
+                  <thead><tr><th>Nama</th>{tableData.occurrences.map((o) => {
+                    const st = scheduleStatus({ dateISO: o.occurrence_date, submitted: (tableData.attendance?.[o.id] || []).length > 0, holiday: Boolean(tableData.holidays?.[o.id]), todayISO: toISODate(todayJakarta()) });
+                    return <th key={o.id} className={`sched-${st}`}>{o.occurrence_date.slice(8, 10)}<br />{String(o.occurrence_time).slice(0, 5)}</th>;
+                  })}</tr></thead>
                   <tbody>
                     {(store.members || []).filter((m) => m.active).map((m) => (
                       <tr key={m.id}>
@@ -1211,32 +1214,40 @@ export default function Absensi() {
           </div>
           {editLoading && <p className="hint">Memuat daftar jadwal...</p>}
           {!editLoading && editTab === 'rutin' && (
-            <div className="master-rows">
+            <div className="master-rows rows-loose">
               {editRutin.length === 0 && <p className="hint">Tidak ada jadwal rutin pada bulan ini.</p>}
-              {editRutin.map((o) => (
-                <div className="master-row" key={o.id}>
-                  <span>{formatID(o.occurrence_date)} • {String(o.occurrence_time).slice(0, 5)}{o.holiday ? ' • Libur' : o.submitted ? ' • Sudah diisi' : ' • Belum diisi'}</span>
-                  <button
-                    type="button"
-                    className="btn"
-                    style={{ minHeight: 38 }}
-                    disabled={o.holiday}
-                    onClick={() => {
-                      setSelectedKey(o.id);
-                      setEditOcc(o);
-                      setEditing(true);
-                      setShowEditPicker(false);
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                  >
-                    Edit
-                  </button>
-                </div>
-              ))}
+              {editRutin.map((o) => {
+                const st = scheduleStatus({ dateISO: o.occurrence_date, submitted: o.submitted, holiday: o.holiday, todayISO: toISODate(todayJakarta()) });
+                const badge = o.holiday ? <StatusBadge kind="libur">Libur</StatusBadge>
+                  : o.submitted ? <StatusBadge kind="hadir">Sudah diisi</StatusBadge>
+                  : st === 'missing' ? <StatusBadge kind="alpha">Belum diisi</StatusBadge>
+                  : st === 'today' ? <StatusBadge kind="info">Hari ini</StatusBadge>
+                  : <StatusBadge kind="info">Mendatang</StatusBadge>;
+                return (
+                  <div className={`master-row sched sched-${st}`} key={o.id}>
+                    <span>{formatID(o.occurrence_date)} • {String(o.occurrence_time).slice(0, 5)} {badge}</span>
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ minHeight: 38 }}
+                      disabled={o.holiday}
+                      onClick={() => {
+                        setSelectedKey(o.id);
+                        setEditOcc(o);
+                        setEditing(true);
+                        setShowEditPicker(false);
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}
+                    >
+                      Edit
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
           {!editLoading && editTab === 'khusus' && (
-            <div className="master-rows">
+            <div className="master-rows rows-loose">
               {editSpecials.length === 0 && <p className="hint">Tidak ada pengajian khusus pada bulan ini.</p>}
               {editSpecials.map((e) => (
                 <div className="master-row" key={e.id}>

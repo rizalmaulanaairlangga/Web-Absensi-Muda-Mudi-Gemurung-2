@@ -198,8 +198,22 @@ export function Modal({ title, onClose, children, foot }) {
   );
 }
 
-export function Empty({ title, desc, action }) {
-  return (
+const BADGE_KINDS = {
+  hadir: 'green',
+  izin: 'amber',
+  alpha: 'red',
+  info: 'blue',
+  aktif: 'blue',
+  nonaktif: 'gray',
+  libur: 'gray',
+};
+
+export function StatusBadge({ kind = 'info', children }) {
+  const cls = BADGE_KINDS[kind] || 'blue';
+  return <span className={`badge ${cls}`}>{children}</span>;
+}
+
+export function Empty({ title, desc, action }) {  return (
     <div className="empty">
       <div className="empty-icon" aria-hidden="true"><CalendarIcon /></div>
       <strong>{title}</strong>

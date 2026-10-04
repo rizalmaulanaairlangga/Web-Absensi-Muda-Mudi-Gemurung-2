@@ -17,16 +17,36 @@ function timeRange(start, end) {
 }
 
 export function suggestReplacements(schedules, dateISO) {
-  if (!dateISO) return [];
-  const dow = dayOfWeek(dateISO);
-  const days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
-  return (schedules || [])
-    .filter((s) => s.active !== false && s.day_of_week === dow)
-    .map((s) => ({
-      value: s.id,
-      label: `${days[dow]} — ${timeRange(s.event_time, s.end_time)}`,
-      schedule: s,
-    }));
+  return [];
+}
+
+export function replacementCandidates(schedules, fromISO, days = 45) {
+  const out = [];
+  const base = fromISO ? new Date(fromISO + 'T00:00:00') : todayJakarta();
+  if (Number.isNaN(base.getTime())) return out;
+  for (let i = 0; i <= days; i++) {
+    const d = new Date(base);
+    d.setDate(d.getDate() + i);
+    const iso = toISODate(d);
+    const dow = d.getDay();
+    (schedules || [])
+      .filter((s) => s.active !== false && s.day_of_week === dow)
+      .forEach((s) => {
+        out.push({
+          value: `${s.id}|${iso}`,
+          scheduleId: s.id,
+          date: iso,
+          label: `${formatID(iso)} • ${timeRange(s.event_time, s.end_time)}`,
+        });
+      });
+  }
+  return out.sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+export function defaultReplacement(cands, dateISO) {
+  if (!cands.length) return '';
+  const after = cands.find((c) => c.date >= (dateISO || ''));
+  return (after || cands[0]).value;
 }
 
 export function SpecialEventModal({ schedules = [], onClose, onCreated }) {
@@ -73,18 +93,20 @@ export function SpecialEventModal({ schedules = [], onClose, onCreated }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const options = React.useMemo(() => suggestReplacements(schedules, date), [schedules, date]);
+  const options = React.useMemo(() => replacementCandidates(schedules, date), [schedules, date]);
 
   React.useEffect(() => {
     if (touchedReplace) {
       if (replaced && !options.some((o) => String(o.value) === String(replaced))) setReplaced('');
       return;
     }
-    setReplaced(options.length ? String(options[0].value) : '');
+    setReplaced(defaultReplacement(options, date));
   }, [date]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function persistLocalEvent(ev) {
-    try {
+  const chosenReplacement = options.find((o) => String(o.value) === String(replaced));
+  const replacementDiffers = Boolean(chosenReplacement && chosenReplacement.date !== date);
+
+  async function persistLocalEvent(ev) {    try {
       const snap = (await loadSnapshot(account.id)) || {};
       const specials = [...(snap.specials || []).filter((e) => e.id !== ev.id), { ...ev, offline: true }];
       await saveSnapshot(account.id, { ...snap, specials });
@@ -126,7 +148,8 @@ export function SpecialEventModal({ schedules = [], onClose, onCreated }) {
     if (!start || !end) { setError('Isi jam mulai dan jam selesai.'); return; }
     if (end <= start) { setError('Jam selesai harus lebih dari jam mulai.'); return; }
     const typeRow = types.find((t) => String(t.id) === String(typeId));
-    const sch = (schedules || []).find((s) => String(s.id) === String(replaced));
+    const repChoice = options.find((o) => String(o.value) === String(replaced));
+    const sch = (schedules || []).find((s) => String(s.id) === String(repChoice?.scheduleId || replaced));
     const ev = {
       id: newOpId('se'),
       account_id: account.id,
@@ -137,12 +160,12 @@ export function SpecialEventModal({ schedules = [], onClose, onCreated }) {
       event_time: start,
       end_time: end,
     };
-    const rep = sch ? {
-      recurring_schedule_id: sch.id,
-      occurrence_date: date,
-      occurrence_time: sch.event_time,
-      occurrence_end_time: sch.end_time || null,
-      day_name: dayName(date),
+    const rep = repChoice ? {
+      recurring_schedule_id: repChoice.scheduleId,
+      occurrence_date: repChoice.date,
+      occurrence_time: sch?.event_time || start,
+      occurrence_end_time: sch?.end_time || end,
+      day_name: dayName(repChoice.date),
       reason: `Digantikan: ${typeRow?.name || 'pengajian khusus'}`,
     } : null;
     setBusy(true);
@@ -238,10 +261,10 @@ export function SpecialEventModal({ schedules = [], onClose, onCreated }) {
           options={[{ value: '', label: 'Tidak menggantikan jadwal rutin' }, ...options.map((o) => ({ value: String(o.value), label: o.label }))]}
           onChange={(v) => { setReplaced(v); setTouchedReplace(true); }} />
       </label>
-      {replaced ? (
-        <div className="banner info"><span>Jadwal rutin pada tanggal tersebut otomatis ditandai libur setelah tersimpan. Jadwal master tidak dihapus.</span></div>
+      {replaced && chosenReplacement ? (
+        <div className="banner info"><span>Jadwal {chosenReplacement.label} akan otomatis ditandai libur setelah tersimpan. Jadwal master tidak dihapus.{replacementDiffers ? ' Tanggalnya berbeda dengan pengajian khusus, itu valid.' : ''}</span></div>
       ) : (
-        <div className="banner warn"><span>Tanggal ini bertepatan dengan jadwal rutin? Pilih jadwal yang digantikan bila perlu. Dibiarkan kosong berarti tidak ada libur otomatis.</span></div>
+        <div className="banner warn"><span>Pilih jadwal rutin yang digantikan bila pengajian khusus ini menggantikan salah satunya, meskipun tanggalnya berbeda. Dibiarkan kosong berarti tidak ada libur otomatis.</span></div>
       )}
       {error && <p className="field-error">{error}</p>}
     </Modal>

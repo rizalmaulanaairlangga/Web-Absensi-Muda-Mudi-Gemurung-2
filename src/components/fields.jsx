@@ -121,31 +121,91 @@ export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeh
   );
 }
 
+function clockPos(index, total, radiusPct) {
+  const a = (index / total) * Math.PI * 2 - Math.PI / 2;
+  return { left: `${50 + radiusPct * Math.cos(a)}%`, top: `${50 + radiusPct * Math.sin(a)}%` };
+}
+
 export function TimeField({ value, onChange, ariaLabel = 'Pilih waktu', placeholder = 'Pilih waktu', minuteStep = 5 }) {
   const [open, setOpen] = React.useState(false);
   const rootRef = React.useRef(null);
+  const faceRef = React.useRef(null);
   const [hour, setHour] = React.useState(19);
   const [minute, setMinute] = React.useState(30);
+  const [mode, setMode] = React.useState('hour');
+  const [freeOpen, setFreeOpen] = React.useState(false);
   useOutsideClose(open, rootRef, () => setOpen(false));
 
   React.useEffect(() => {
-    if (open && value) {
-      const m = /^(\d{2}):(\d{2})/.exec(value);
+    if (open) {
+      const m = /^(\d{2}):(\d{2})/.exec(value || '');
       if (m) {
         setHour(Math.min(23, Math.max(0, Number(m[1]))));
         setMinute(Math.min(59, Math.max(0, Number(m[2]))));
       }
+      setMode('hour');
+      setFreeOpen(false);
     }
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const minutes = [];
   for (let mm = 0; mm < 60; mm += minuteStep) minutes.push(mm);
-  if (!minutes.includes(minute)) minutes.push(minute);
 
   function confirm(h, m) {
     onChange?.(`${pad(h)}:${pad(m)}`);
     setOpen(false);
   }
+
+  function pickHour(h) {
+    setHour(h);
+    setMode('minute');
+  }
+
+  function nearestFromEvent(e, values, ringSplit) {
+    const el = faceRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const dx = (e.clientX ?? cx) - cx;
+    const dy = (e.clientY ?? cy) - cy;
+    let ang = Math.atan2(dy, dx) + Math.PI / 2;
+    if (ang < 0) ang += Math.PI * 2;
+    const total = values.length;
+    const idx = Math.round((ang / (Math.PI * 2)) * total) % total;
+    if (!ringSplit) return values[idx];
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const mid = (rect.width / 2) * 0.68;
+    return dist < mid ? values[idx] : values[idx] + 12;
+  }
+
+  function onFaceClick(e) {
+    if (e.target.closest('button')) return;
+    if (mode === 'hour') {
+      const v = nearestFromEvent(e, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], true);
+      if (v !== null && v !== undefined) pickHour(v);
+    } else {
+      const v = nearestFromEvent(e, minutes, false);
+      if (v !== null && v !== undefined) setMinute(v);
+    }
+  }
+
+  function onFaceKey(e) {
+    if (mode === 'hour') {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowRight') { e.preventDefault(); setHour((h) => (h + 1) % 24); }
+      else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') { e.preventDefault(); setHour((h) => (h + 23) % 24); }
+      else if (e.key === 'Enter') { e.preventDefault(); setMode('minute'); }
+    } else {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowRight') { e.preventDefault(); setMinute((m) => (m + minuteStep) % 60); }
+      else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') { e.preventDefault(); setMinute((m) => (m - minuteStep + 60) % 60); }
+      else if (e.key === 'Enter') { e.preventDefault(); confirm(hour, minute); }
+    }
+  }
+
+  const hourAngle = ((hour % 12) / 12) * 360;
+  const minuteAngle = ((minute % 60) / 60) * 360;
+  const outerHours = [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23];
+  const innerHours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 
   return (
     <div ref={rootRef} className="field-pick">
@@ -167,39 +227,56 @@ export function TimeField({ value, onChange, ariaLabel = 'Pilih waktu', placehol
           aria-label={ariaLabel}
           onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false); }}
         >
-          <div className="time-preview" aria-live="polite">{pad(hour)} : {pad(minute)}</div>
-          <div className="time-cols">
-            <div>
-              <div className="time-cap">Jam</div>
-              <div className="time-grid" role="group" aria-label="Jam">
-                {Array.from({ length: 24 }, (_, h) => (
-                  <button key={h} type="button" className={`time-cell${h === hour ? ' selected' : ''}`} onClick={() => setHour(h)}>{pad(h)}</button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <div className="time-cap">Menit</div>
-              <div className="time-grid" role="group" aria-label="Menit">
-                {minutes.map((mm) => (
-                  <button key={mm} type="button" className={`time-cell${mm === minute ? ' selected' : ''}`} onClick={() => confirm(hour, mm)}>{pad(mm)}</button>
-                ))}
-              </div>
-              <label className="field" style={{ marginTop: 8, marginBottom: 0 }}>
-                <span>Menit bebas (0–59)</span>
-                <input
-                  className="input"
-                  type="number"
-                  min="0"
-                  max="59"
-                  value={minute}
-                  onChange={(e) => {
-                    const v = Math.min(59, Math.max(0, Number(e.target.value || 0)));
-                    setMinute(v);
-                  }}
-                />
-              </label>
-            </div>
+          <div className="time-head" aria-live="polite">
+            <button type="button" className={`time-head-part${mode === 'hour' ? ' active' : ''}`} onClick={() => setMode('hour')} aria-label="Ubah jam">{pad(hour)}</button>
+            <span aria-hidden="true">:</span>
+            <button type="button" className={`time-head-part${mode === 'minute' ? ' active' : ''}`} onClick={() => setMode('minute')} aria-label="Ubah menit">{pad(minute)}</button>
           </div>
+          <div
+            ref={faceRef}
+            className="clock-face"
+            role="group"
+            aria-label={mode === 'hour' ? 'Pilih jam' : 'Pilih menit'}
+            tabIndex={0}
+            onClick={onFaceClick}
+            onKeyDown={onFaceKey}
+          >
+            <div className="clock-hand" style={{ transform: `rotate(${mode === 'hour' ? hourAngle : minuteAngle}deg)`, height: mode === 'hour' && hour < 12 ? '26%' : '38%' }} aria-hidden="true" />
+            <div className="clock-dot" aria-hidden="true" />
+            {mode === 'hour' ? (
+              <>
+                {outerHours.map((h, i) => (
+                  <button key={h} type="button" className={`clock-num outer${h === hour ? ' selected' : ''}`} style={clockPos(i, 12, 40)} onClick={() => pickHour(h)} aria-label={`Jam ${pad(h)}`}>{pad(h)}</button>
+                ))}
+                {innerHours.map((h, i) => (
+                  <button key={h} type="button" className={`clock-num inner${h === hour ? ' selected' : ''}`} style={clockPos(i, 12, 24)} onClick={() => pickHour(h)} aria-label={`Jam ${pad(h)}`}>{pad(h)}</button>
+                ))}
+              </>
+            ) : (
+              minutes.map((mm, i) => (
+                <button key={mm} type="button" className={`clock-num${Math.floor(minute / minuteStep) * minuteStep === mm ? ' selected' : ''}`} style={clockPos(i, minutes.length, 37)} onClick={() => setMinute(mm)} aria-label={`Menit ${pad(mm)}`}>{pad(mm)}</button>
+              ))
+            )}
+          </div>
+          {mode === 'minute' && (
+            !freeOpen ? (
+              <button type="button" className="btn btn-ghost btn-block" style={{ marginTop: 10 }} onClick={() => setFreeOpen(true)}>Menit bebas (0–59)</button>
+            ) : (
+              <div className="time-free">
+                <label className="field" style={{ marginBottom: 0, flex: 1 }}><span>Menit bebas (0–59)</span>
+                  <input
+                    className="input"
+                    type="number"
+                    min="0"
+                    max="59"
+                    value={minute}
+                    onChange={(e) => setMinute(Math.min(59, Math.max(0, Number(e.target.value || 0))))}
+                  />
+                </label>
+                <button type="button" className="btn btn-primary" onClick={() => { setFreeOpen(false); confirm(hour, minute); }}>OK</button>
+              </div>
+            )
+          )}
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
             <button type="button" className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setOpen(false)}>Batal</button>
             <button type="button" className="btn btn-primary" style={{ flex: 1 }} onClick={() => confirm(hour, minute)}>Pilih</button>
@@ -209,3 +286,4 @@ export function TimeField({ value, onChange, ariaLabel = 'Pilih waktu', placehol
     </div>
   );
 }
+

@@ -4,7 +4,7 @@ import { useApp } from '../lib/store.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { idbGet, idbSet } from '../lib/idb.js';
 import { DEFAULT_ABSENCE, DEFAULT_STATUS, DEFAULT_HADITH, DEFAULT_FREE, DEFAULT_SPEAKERS, DEFAULT_SPECIAL_TYPES, MEMBER_CATEGORIES } from '../lib/seed.js';
-import { Modal, Empty, PlusIcon, TrashIcon, PencilIcon, ClockIcon, CustomSelect, UsersIcon, BookOpenIcon, LayersIcon, ArrowLeftIcon } from '../components/ui.jsx';
+import { Modal, Empty, PlusIcon, TrashIcon, PencilIcon, ClockIcon, CustomSelect, UsersIcon, BookOpenIcon, LayersIcon, ArrowLeftIcon, StatusBadge } from '../components/ui.jsx';
 import { formatDateShortID, formatID } from '../lib/dates.js';
 import { DateField, TimeField } from '../components/fields.jsx';
 
@@ -81,6 +81,11 @@ export default function Admin() {
   const [memberModal, setMemberModal] = useState(null);
   const [memberForm, setMemberForm] = useState({ full_name: '', nickname: '', gender: 'MALE', status: '', category: '', birth_date: '', active: true });
   const [q, setQ] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
+  const [fGender, setFGender] = useState('all');
+  const [fCat, setFCat] = useState('all');
+  const [fStatus, setFStatus] = useState('all');
+  const [fActive, setFActive] = useState('all');
 
   const [absence, setAbsence] = useMaster(account, 'absence', DEFAULT_ABSENCE, 'absence_types');
   const [statuses, setStatuses] = useMaster(account, 'status', DEFAULT_STATUS, 'member_statuses');
@@ -122,11 +127,17 @@ export default function Admin() {
         const list = evs || [];
         const ids = list.map((e) => e.id);
         let filled = new Set();
+        const replacedDates = {};
         if (ids.length) {
           const { data: att } = await supabase.from('special_attendance').select('special_event_id').in('special_event_id', ids);
           filled = new Set((att || []).map((a) => a.special_event_id));
         }
-        setSpecEvents(list.map((e) => ({ ...e, submitted: filled.has(e.id) })));
+        const linked = list.map((e) => e.linked_holiday_occurrence_id).filter(Boolean);
+        if (linked.length) {
+          const { data: hols } = await supabase.from('holidays').select('occurrence_id,holiday_date').in('occurrence_id', linked);
+          (hols || []).forEach((h) => { replacedDates[h.occurrence_id] = h.holiday_date; });
+        }
+        setSpecEvents(list.map((e) => ({ ...e, submitted: filled.has(e.id), replaced_date: e.linked_holiday_occurrence_id ? (replacedDates[e.linked_holiday_occurrence_id] || null) : null })));
       } catch { /* abaikan */ }
       setSpecLoading(false);
     })();
@@ -186,7 +197,26 @@ export default function Admin() {
 
   if (!account) return <div className="card"><Empty title="Perlu masuk" desc="Masuk untuk mengelola data." /></div>;
 
-  const filteredMembers = members.filter((m) => (`${m.full_name} ${m.nickname}`).toLowerCase().includes(q.toLowerCase()));
+  const activeFilterCount = [fGender, fCat, fStatus, fActive].filter((v) => v !== 'all').length + (q.trim() ? 1 : 0);
+  function resetFilters() {
+    setQ('');
+    setFGender('all');
+    setFCat('all');
+    setFStatus('all');
+    setFActive('all');
+  }
+  const filteredMembers = members.filter((m) => {
+    const needle = q.trim().toLowerCase();
+    if (needle && !(`${m.full_name || ''} ${m.nickname || ''}`.toLowerCase().includes(needle))) return false;
+    if (fGender !== 'all' && m.gender !== fGender) return false;
+    if (fCat !== 'all' && (m.member_category || '') !== fCat) return false;
+    const stName = m.member_statuses?.name || m.status || '';
+    if (fStatus === '__none') { if (stName) return false; }
+    else if (fStatus !== 'all' && stName !== fStatus) return false;
+    if (fActive === 'active' && !m.active) return false;
+    if (fActive === 'inactive' && m.active) return false;
+    return true;
+  });
 
   async function saveMember() {
     if (!memberForm.full_name.trim()) { toast('Nama lengkap wajib diisi.'); return; }
@@ -273,7 +303,38 @@ export default function Admin() {
               <div><h3 className="card-title" style={{ fontSize: 15 }}>Data Anggota</h3><p className="card-desc" style={{ marginBottom: 0 }}>{members.filter((m) => m.active).length} aktif dari {members.length} anggota.</p></div>
               <button className="btn btn-primary" style={{ minHeight: 40, padding: '8px 12px', fontSize: 13 }} onClick={() => { setMemberForm({ full_name: '', nickname: '', gender: 'MALE', status: '', category: '', birth_date: '', active: true }); setMemberModal('add'); }}><PlusIcon /> Tambah</button>
             </div>
-            <input className="input search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari anggota..." aria-label="Cari anggota" />
+            <input className="input search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari nama / nickname..." aria-label="Cari anggota" />
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+            <button type="button" className="btn" style={{ minHeight: 40 }} onClick={() => setShowFilters((v) => !v)} aria-expanded={showFilters}>
+              Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+            </button>
+            <button type="button" className="btn" style={{ minHeight: 40 }} disabled={activeFilterCount === 0} onClick={resetFilters}>Reset Filter</button>
+            <span className="hint" style={{ alignSelf: 'center' }}>{filteredMembers.length} dari {members.length} anggota</span>
+          </div>
+          {showFilters && (
+            <div className="row cols-2" style={{ marginBottom: 10 }}>
+              <div className="field" style={{ marginBottom: 0 }}><span>Gender</span>
+                <CustomSelect value={fGender} ariaLabel="Filter gender" placeholder="Semua Gender"
+                  options={[{ value: 'all', label: 'Semua Gender' }, { value: 'MALE', label: 'Laki-laki' }, { value: 'FEMALE', label: 'Perempuan' }]}
+                  onChange={setFGender} />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}><span>Kategori</span>
+                <CustomSelect value={fCat} ariaLabel="Filter kategori" placeholder="Semua Kategori"
+                  options={[{ value: 'all', label: 'Semua Kategori' }, ...MEMBER_CATEGORIES.map((c) => ({ value: c, label: c }))]}
+                  onChange={setFCat} />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}><span>Status</span>
+                <CustomSelect value={fStatus} ariaLabel="Filter status" placeholder="Semua Status"
+                  options={[{ value: 'all', label: 'Semua Status' }, { value: '__none', label: 'Belum ada status' }, ...statuses.map((s) => ({ value: s.name, label: s.name }))]}
+                  onChange={setFStatus} />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}><span>Keaktifan</span>
+                <CustomSelect value={fActive} ariaLabel="Filter keaktifan" placeholder="Semua"
+                  options={[{ value: 'all', label: 'Semua' }, { value: 'active', label: 'Aktif' }, { value: 'inactive', label: 'Tidak Aktif' }]}
+                  onChange={setFActive} />
+              </div>
+            </div>
+          )}
             {filteredMembers.length === 0 && <p className="hint">Belum ada anggota yang cocok.</p>}
             {filteredMembers.length > 0 && (
               <div className="table-wrap">
@@ -288,7 +349,7 @@ export default function Admin() {
                         <td>{m.gender === 'MALE' ? 'Laki-laki' : 'Perempuan'}</td>
                         <td>{m.member_statuses?.name || m.status || <span className="hint">Belum ditentukan</span>}</td>
                         <td>{m.birth_date ? formatDateShortID(m.birth_date) : '-'}</td>
-                        <td><span className={`badge ${m.active ? 'green' : 'gray'}`}>{m.active ? 'Aktif' : 'Nonaktif'}</span></td>
+                        <td><StatusBadge kind={m.active ? 'aktif' : 'nonaktif'}>{m.active ? 'Aktif' : 'Nonaktif'}</StatusBadge></td>
                         <td><button className="icon-btn edit" aria-label={`Edit ${m.nickname || m.full_name}`} onClick={() => { setMemberForm({ full_name: m.full_name, nickname: m.nickname || '', gender: m.gender, status: m.member_statuses?.name || m.status || '', category: m.member_category || '', birth_date: m.birth_date || '', active: m.active, id: m.id }); setMemberModal(m.id); }}><PencilIcon /></button></td>
                       </tr>
                     ))}
@@ -361,7 +422,8 @@ export default function Admin() {
                     <div>
                       <div><strong>{e.event_type_snapshot || 'Pengajian Khusus'}</strong></div>
                       <div className="hint">{e.event_date ? formatID(e.event_date) : ''} • {timeRange(e.event_time, e.end_time)}</div>
-                      <div className="hint">{e.linked_holiday_occurrence_id ? 'Menggantikan jadwal rutin (libur)' : 'Tidak menggantikan jadwal rutin'} • {e.submitted ? 'Absensi sudah diisi' : 'Absensi tersedia'}</div>
+                      <div className="hint">{e.linked_holiday_occurrence_id ? `Menggantikan: ${e.replaced_date ? formatID(e.replaced_date) : 'jadwal rutin (libur)'}` : 'Tidak menggantikan jadwal rutin'}</div>
+                      <div style={{ marginTop: 6 }}><StatusBadge kind={e.submitted ? 'hadir' : 'info'}>{e.submitted ? 'Sudah diisi' : 'Belum diisi'}</StatusBadge></div>
                     </div>
                     <span className="master-actions">
                       <button className="btn" style={{ minHeight: 38 }} onClick={() => navigate(`/?special=${e.id}`)}>Lihat</button>
