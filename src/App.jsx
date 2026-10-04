@@ -83,8 +83,19 @@ function AccountMenu() {
 }
 
 function Header() {
-  const { online, syncState, pendingCount, retrySync } = useApp();
+  const { online, syncState, pendingCount, retrySync, conflicts } = useApp();
   const actionable = pendingCount > 0;
+  const syncing = syncState === 'Menyinkronkan';
+  const attention = conflicts.length > 0 || syncState === 'Perlu perhatian';
+  const label = !online
+    ? (actionable ? `Offline • ${pendingCount} menunggu` : 'Offline')
+    : syncing
+      ? 'Menyinkronkan…'
+      : attention
+        ? 'Perlu perhatian'
+        : actionable
+          ? `Online • ${pendingCount} menunggu`
+          : 'Online';
   return (
     <header className="app-header">
       <div className="brand">
@@ -99,11 +110,11 @@ function Header() {
           className="status-pill"
           role="status"
           onClick={() => { if (actionable) retrySync(); }}
-          title={actionable ? `Ada ${pendingCount} perubahan menunggu. Klik untuk sinkron ulang.` : 'Status koneksi'}
-          aria-label={actionable ? `Sinkronisasi tertunda (${pendingCount}). Aktifkan untuk mencoba lagi.` : `Status: ${online ? syncState : 'Offline'}`}
+          title={actionable ? `Ada ${pendingCount} perubahan menunggu. Klik untuk sinkron ulang.` : 'Status koneksi dan sinkronisasi'}
+          aria-label={actionable ? `Sinkronisasi tertunda (${pendingCount}). Aktifkan untuk mencoba lagi.` : `Status: ${label}`}
         >
-          <span className={`dot ${online ? (syncState === 'Menyinkronkan' ? 'sync' : 'online') : 'offline'}`} />
-          {online ? (syncState === 'Menyinkronkan' ? 'Menyinkronkan' : `Online${actionable ? ` • ${pendingCount}` : ''}`) : `Offline${actionable ? ` • ${pendingCount}` : ''}`}
+          <span className={`dot ${online ? (syncing ? 'sync' : attention ? 'offline' : 'online') : 'offline'}`} />
+          {label}
         </button>
         <ThemeToggle />
         <AccountMenu />

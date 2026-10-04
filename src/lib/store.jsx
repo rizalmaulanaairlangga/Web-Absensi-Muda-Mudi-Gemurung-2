@@ -1,12 +1,18 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from './supabaseClient.js';
+import { withTimeout, isNetworkError, isAuthInvalidError } from './net.js';
+export { withTimeout, isNetworkError, isAuthInvalidError };
 import { idbGet, idbSet, idbDel } from './idb.js';
+import { loadQueue, saveQueue, pendingOps, normalizeOp } from '../services/sync/syncQueue.js';
+import { processQueue, resolveConflictOp } from '../services/sync/syncEngine.js';
+import { registerBackgroundSync } from '../services/sync/backgroundSync.js';
 
 const AppCtx = createContext(null);
 export const useApp = () => useContext(AppCtx);
 
 const ACC_KEY = 'gm-account';
-const QUEUE_KEY = 'sync-queue';
+const SB_SESSION_KEY = 'sb-session';
+const SB_CONFIG_KEY = 'sb-config';
 
 function uid(prefix) { return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`; }
 export function clientId(prefix) {
@@ -14,29 +20,6 @@ export function clientId(prefix) {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
   } catch { /* abaikan */ }
   return `${prefix || 'id'}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-export function withTimeout(promise, ms = 20000) {
-  let timer = null;
-  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), ms); });
-  return Promise.race([
-    Promise.resolve(promise).then((v) => { if (timer) clearTimeout(timer); return v; }, (e) => { if (timer) clearTimeout(timer); throw e; }),
-    timeout,
-  ]);
-}
-
-export function isNetworkError(err) {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
-  const msg = String(err?.message || err || '').toLowerCase();
-  return /failed to fetch|networkerror|network error|load failed|timeout|timed out|aborterror|dns|econn|offline|not connected|connection|refused|unreachable|例外的|net::/i.test(msg);
-}
-
-function isAuthInvalidError(err) {
-  if (isNetworkError(err)) return false;
-  const status = err?.status;
-  if (status === 401) return true;
-  const msg = String(err?.message || err || '').toLowerCase();
-  return /invalid (jwt|token|grant|claim|session)|jwt (expired|invalid)|token (expired|invalid|revoked)|session (expired|invalid|revoked|not found)|refresh token (expired|invalid|revoked|not found)|user not found/i.test(msg);
 }
 
 function readCachedAccount() {
@@ -68,15 +51,6 @@ function readValidGuest() {
     try { localStorage.removeItem('gm-guest'); } catch { /* abaikan */ }
     return null;
   }
-}
-
-function rowsDiffer(localRows, serverRows) {
-  const norm = (rows) => new Map((rows || []).map((r) => [String(r.member_id), `${r.status}|${r.absence_name_snapshot || r.absence || ''}`]));
-  const a = norm(localRows);
-  const b = norm(serverRows);
-  if (a.size !== b.size) return true;
-  for (const [k, v] of a) if (b.get(k) !== v) return true;
-  return false;
 }
 
 export function AppProvider({ children }) {
@@ -171,6 +145,7 @@ export function AppProvider({ children }) {
     setIsGuest(false);
     writeCachedAccount(null);
     try { localStorage.removeItem('gm-guest'); } catch { /* abaikan */ }
+    try { await idbDel(SB_SESSION_KEY); } catch { /* abaikan */ }
     if (reason === 'expired') toast('Sesi berakhir. Masuk kembali untuk melanjutkan.');
   }
 
@@ -276,167 +251,58 @@ export function AppProvider({ children }) {
   async function persistQueue(q) {
     queueRef.current = q;
     setQueue((prev) => (JSON.stringify(prev) === JSON.stringify(q) ? prev : q));
-    await idbSet(QUEUE_KEY, q);
+    await saveQueue(q);
     updateSyncState(q);
   }
 
-  async function loadQueue() {
-    const raw = await idbGet(QUEUE_KEY, []);
-    const valid = Array.isArray(raw) ? raw.filter((o) => o && o.type === 'SAVE_ATTENDANCE' && o.accountId && o.occurrence) : [];
+  async function reloadQueue() {
+    const valid = await loadQueue();
     queueRef.current = valid;
     setQueue(valid);
     updateSyncState(valid);
     return valid;
   }
 
-  async function markOp(id, patch) {
-    const q = queueRef.current.map((o) => (o.id === id ? { ...o, ...patch } : o));
-    await persistQueue(q);
-    return q.find((o) => o.id === id);
-  }
-
-  async function removeOp(id) {
-    const q = queueRef.current.filter((o) => o.id !== id);
-    await persistQueue(q);
-  }
-
-  async function replayOp(op, opts = {}) {
-    if (!supabase) throw new Error('Backend belum dikonfigurasi.');
-    const { data: occ, error: occErr } = await supabase.from('schedule_occurrences').upsert({
-      account_id: op.accountId,
-      recurring_schedule_id: op.occurrence.recurring_schedule_id,
-      occurrence_date: op.occurrence.occurrence_date,
-      occurrence_time: op.occurrence.occurrence_time,
-      occurrence_end_time: op.occurrence.occurrence_end_time || null,
-      day_name: op.occurrence.day_name,
-    }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date' }).select().single();
-    if (occErr) throw occErr;
-    if (!opts.force) {
-      const { data: serverRows, error: selErr } = await supabase.from('attendance').select('member_id,status,absence_name_snapshot,updated_at').eq('occurrence_id', occ.id);
-      if (selErr) throw selErr;
-      if ((serverRows || []).length > 0) {
-        const serverMax = Math.max(...serverRows.map((r) => new Date(r.updated_at || 0).getTime()));
-        if (serverMax > (op.createdAt || 0) && rowsDiffer(op.rows, serverRows)) {
-          const conflict = new Error('conflict');
-          conflict.conflict = true;
-          conflict.serverRows = serverRows;
-          conflict.dbId = occ.id;
-          throw conflict;
-        }
-      }
-    }
-    for (const r of op.rows) {
-      const { error } = await supabase.from('attendance').upsert({
-        account_id: op.accountId,
-        occurrence_id: occ.id,
-        member_id: r.member_id,
-        status: r.status,
-        absence_name_snapshot: r.absence || null,
-        member_name_snapshot: r.member_name,
-      }, { onConflict: 'account_id,occurrence_id,member_id' });
-      if (error) throw error;
-    }
-    for (const m of op.mats || []) {
-      const payload = { id: m.clientId, account_id: op.accountId, occurrence_id: occ.id, kind: m.kind };
-      if (m.kind === 'QURAN') {
-        payload.quran_surah_number = m.surah;
-        payload.quran_surah_name_snapshot = m.surahName;
-        payload.ayat_range = m.ayat;
-        payload.speaker_name_snapshot = m.speaker || null;
-      } else if (m.kind === 'HADITH') {
-        payload.hadith_name_snapshot = m.hadith;
-        payload.hadith_page = m.halaman || null;
-        payload.speaker_name_snapshot = m.speaker || null;
-      } else if (m.kind === 'NASEHAT') {
-        payload.speaker_name_snapshot = m.speaker || null;
-      } else if (m.kind === 'FREE') {
-        payload.free_activity_name_snapshot = m.activity || null;
-        payload.speaker_name_snapshot = m.speaker || null;
-      }
-      const { error } = await supabase.from('materials').upsert(payload, { onConflict: 'id' });
-      if (error) throw error;
-    }
-    try {
-      await supabase.from('audit_logs').insert({
-        account_id: op.accountId,
-        action: 'SYNC_ATTENDANCE',
-        entity_type: 'attendance',
-        entity_id: occ.id,
-        new_data: { count: op.rows.length, opId: op.id },
-      });
-    } catch { /* audit best-effort */ }
-    return occ.id;
-  }
-
-  async function processQueue(manual = false) {
-    if (syncingRef.current || !supabase || !isSupabaseConfigured) return;
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
-    const actionable = queueRef.current.filter((o) => o.status === 'pending' || o.status === 'failed');
-    if (actionable.length === 0) {
-      updateSyncState(queueRef.current);
-      return;
-    }
+  async function runSync(manual = false) {
+    if (syncingRef.current || !supabase || !isSupabaseConfigured) return { synced: 0 };
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return { synced: 0 };
     syncingRef.current = true;
     setSyncState('Menyinkronkan');
-    let synced = 0;
-    for (const op of actionable) {
-      const current = queueRef.current.find((o) => o.id === op.id);
-      if (!current || (current.status !== 'pending' && current.status !== 'failed')) continue;
-      await markOp(op.id, { status: 'syncing' });
-      try {
-        await replayOp(op);
-        await removeOp(op.id);
-        synced += 1;
-      } catch (e) {
-        if (e && e.conflict) {
-          await markOp(op.id, { status: 'conflict', serverRows: e.serverRows || [], dbId: e.dbId || null });
-        } else if (isNetworkError(e)) {
-          await markOp(op.id, { status: 'pending', retry: (current.retry || 0) + 1 });
-          break;
-        } else {
-          await markOp(op.id, { status: 'failed', error: String(e?.message || e || 'gagal').slice(0, 200) });
-        }
+    try {
+      const res = await processQueue({
+        getQueue: () => queueRef.current,
+        persist: persistQueue,
+        accountId: accountRef.current?.id || null,
+        notify: toast,
+        manual,
+      });
+      setLastSyncAt(Date.now());
+      if (!manual && res.needsRecheck && onlineRef.current) {
+        setTimeout(() => { if (!syncingRef.current) void runSync(false); }, 3000);
       }
-    }
-    syncingRef.current = false;
-    const remaining = queueRef.current;
-    updateSyncState(remaining);
-    setLastSyncAt(Date.now());
-    const conflicts = remaining.filter((o) => o.status === 'conflict').length;
-    if (conflicts > 0) toast('Ada data yang perlu perhatian sebelum sinkron.');
-    else if (synced > 0 && remaining.length === 0) toast('Semua perubahan telah tersinkron.');
-    else if (synced > 0) toast('Sebagian perubahan tersinkron.');
-    if (!manual && onlineRef.current && remaining.some((o) => o.status === 'pending' && (o.retry || 0) < 3)) {
-      setTimeout(() => { if (!syncingRef.current) void processQueue(); }, 3000);
+      return res;
+    } finally {
+      syncingRef.current = false;
     }
   }
 
   async function enqueue(op) {
-    const item = { id: clientId('q'), createdAt: Date.now(), status: 'pending', retry: 0, ...op };
+    const built = normalizeOp(op) || normalizeOp({ type: 'SAVE_ATTENDANCE', ...op });
+    if (!built) throw new Error('Format operasi tidak dikenal.');
+    const item = { ...built, id: built.id || clientId('q'), created_at: built.created_at || Date.now(), updated_at: Date.now(), status: 'pending', next_retry_at: 0 };
     await persistQueue([...queueRef.current, item]);
-    if (onlineRef.current) void processQueue();
+    try { await registerBackgroundSync(); } catch { /* best-effort */ }
+    if (onlineRef.current) void runSync(false);
     return item;
   }
 
   async function resolveConflict(opId, choice) {
-    const op = queueRef.current.find((o) => o.id === opId);
-    if (!op) return;
-    if (choice === 'server') {
-      await removeOp(opId);
-      setLastSyncAt(Date.now());
-      toast('Menggunakan data server.');
-      return;
-    }
-    await markOp(opId, { status: 'syncing' });
-    try {
-      await replayOp(op, { force: true });
-      await removeOp(opId);
-      setLastSyncAt(Date.now());
-      toast('Perubahan lokal dikirim ke server.');
-    } catch (e) {
-      if (isNetworkError(e)) await markOp(opId, { status: 'pending' });
-      else await markOp(opId, { status: 'failed', error: String(e?.message || e || 'gagal').slice(0, 200) });
-    }
+    await resolveConflictOp(opId, choice, {
+      getQueue: () => queueRef.current,
+      persist: persistQueue,
+      notify: toast,
+    });
+    setLastSyncAt(Date.now());
   }
 
   async function retrySync() {
@@ -444,11 +310,11 @@ export function AppProvider({ children }) {
       toast('Anda sedang offline. Data tetap tersimpan dan akan dikirim saat koneksi kembali.');
       return;
     }
-    const reset = queueRef.current.map((o) => (o.status === 'pending' || o.status === 'failed' ? { ...o, retry: 0 } : o));
+    const reset = queueRef.current.map((o) => (o.status === 'pending' || o.status === 'failed' ? { ...o, retry_count: 0, next_retry_at: 0, updated_at: Date.now() } : o));
     await persistQueue(reset);
-    await processQueue(true);
+    await runSync(true);
   }
-  async function trySync() { await processQueue(true); }
+  async function trySync() { await runSync(true); }
 
   async function saveSnapshot(accountId, snap) {
     if (!accountId) return;
@@ -459,14 +325,14 @@ export function AppProvider({ children }) {
     return await idbGet(`cache-${accountId}`, null);
   }
 
-  useEffect(() => { loadQueue(); }, []);
+  useEffect(() => { reloadQueue(); }, []);
 
   useEffect(() => {
     const on = () => {
       setOnline(true);
       toast('Kembali online. Menyinkronkan perubahan.');
       revalidateSession().then((valid) => { if (valid === false) clearAuthState('expired'); });
-      void processQueue();
+      void runSync(false);
     };
     const off = () => {
       setOnline(false);
@@ -479,12 +345,35 @@ export function AppProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    if (online && queue.some((o) => o.status === 'pending' || o.status === 'failed')) {
-      const t = setTimeout(() => { void processQueue(); }, 1500);
+    if (online && pendingOps(queue, { includeFailed: false }).length > 0) {
+      const t = setTimeout(() => { void runSync(false); }, 1500);
       return () => clearTimeout(t);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [online, queue, lastSyncAt]);
+
+  useEffect(() => {
+    try {
+      const url = import.meta.env.VITE_SUPABASE_URL;
+      const anon = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      if (url && anon) idbSet(SB_CONFIG_KEY, { url, anon });
+    } catch { /* abaikan */ }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        if (session?.access_token && session?.refresh_token) {
+          await idbSet(SB_SESSION_KEY, {
+            access_token: session.access_token,
+            refresh_token: session.refresh_token,
+            expires_at: session.expires_at || null,
+            user_id: session.user?.id || null,
+          });
+        }
+      } catch { /* abaikan */ }
+    })();
+  }, [session]);
 
   async function loginGuest() {
     const accountId = uid('guest');
@@ -499,6 +388,7 @@ export function AppProvider({ children }) {
     if (isGuest) {
       try { localStorage.removeItem('gm-guest'); } catch { /* abaikan */ }
       await idbDel('guest-data');
+      try { await idbDel(SB_SESSION_KEY); } catch { /* abaikan */ }
       setIsGuest(false);
       setAccount(null);
       writeCachedAccount(null);

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useApp, clientId, withTimeout } from '../lib/store.jsx';
+import { createAttendanceOp } from '../services/sync/syncQueue.js';
 import { supabase } from '../lib/supabaseClient.js';
 import { idbGet, idbSet } from '../lib/idb.js';
 import { todayJakarta, toISODate, formatID, dayName, dayOfWeek, isWithinWindow, windowOpenAt, canEdit, monthLabel } from '../lib/dates.js';
@@ -482,9 +483,10 @@ export default function Absensi() {
   const myConflicts = useMemo(() => {
     if (!occ || !conflicts.length) return [];
     return conflicts.filter((op) => {
-      if (!op.occurrence) return false;
-      return op.occurrence.recurring_schedule_id === occ.recurring_schedule_id
-        && op.occurrence.occurrence_date === occ.occurrence_date;
+      const o = op.payload?.occurrence;
+      if (!o) return false;
+      return o.recurring_schedule_id === occ.recurring_schedule_id
+        && o.occurrence_date === occ.occurrence_date;
     });
   }, [conflicts, occ]);
 
@@ -610,7 +612,7 @@ export default function Absensi() {
       } else if (!online) {
         const key = occKeyOf(occ);
         const recs = rows.map((r) => ({ member_id: r.member_id, member_name_snapshot: r.member_name, status: r.status, absence_name_snapshot: r.absence }));
-        await enqueue({ type: 'SAVE_ATTENDANCE', accountId: account.id, occurrence: occDescriptor(), rows, mats });
+        await enqueue(createAttendanceOp(account.id, occDescriptor(), rows, mats));
         await persistLocalOverlay(key, recs);
         toast('Tersimpan di perangkat. Akan dikirim otomatis saat koneksi kembali.');
       } else {
@@ -653,7 +655,7 @@ export default function Absensi() {
           if (netErr) {
             const key = occKeyOf(occ);
             const recs = rows.map((r) => ({ member_id: r.member_id, member_name_snapshot: r.member_name, status: r.status, absence_name_snapshot: r.absence }));
-            await enqueue({ type: 'SAVE_ATTENDANCE', accountId: account.id, occurrence: occDescriptor(), rows, mats });
+            await enqueue(createAttendanceOp(account.id, occDescriptor(), rows, mats));
             await persistLocalOverlay(key, recs);
             toast('Koneksi terputus. Data tersimpan di perangkat dan akan dikirim otomatis.');
           } else {
@@ -1152,7 +1154,7 @@ export default function Absensi() {
           {(myConflicts.length ? myConflicts : conflicts).map((op) => (
             <div className="conflict-row" key={op.id}>
               <div>
-                <strong>{op.occurrence?.occurrence_date ? formatID(op.occurrence.occurrence_date) : 'Jadwal'}</strong>
+                <strong>{op.payload?.occurrence?.occurrence_date ? formatID(op.payload.occurrence.occurrence_date) : 'Jadwal'}</strong>
                 <p className="hint">Server sudah memiliki data yang berbeda, dibuat setelah perubahan lokal.</p>
               </div>
               <div className="conflict-actions">
