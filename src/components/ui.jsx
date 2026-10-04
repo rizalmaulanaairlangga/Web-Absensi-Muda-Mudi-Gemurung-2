@@ -175,3 +175,185 @@ export function BarChart({ rows }) {
     </div>
   );
 }
+
+function CheckMark({ size = 14 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon({ size = 16 }) {
+  return (
+    <svg className="cselect-chevron" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
+export function CustomSelect({ value, onChange, options = [], placeholder = 'Pilih...', ariaLabel, disabled = false, className = '' }) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const rootRef = React.useRef(null);
+  const rawId = React.useId();
+  const safeId = String(rawId).replace(/[^a-zA-Z0-9]/g, '');
+  const typeRef = React.useRef({ text: '', timer: null });
+  const selectedIndex = options.findIndex((o) => String(o.value) === String(value));
+  const selected = selectedIndex >= 0 ? options[selectedIndex] : null;
+
+  const close = () => { setOpen(false); setActive(-1); };
+  const pick = (idx) => {
+    const opt = options[idx];
+    if (!opt) return;
+    close();
+    if (String(opt.value) !== String(value)) onChange?.(opt.value);
+  };
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (rootRef.current && !rootRef.current.contains(e.target)) close(); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  function onButtonKey(e) {
+    if (disabled) return;
+    if (!open) {
+      if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) {
+        e.preventDefault();
+        setActive(selectedIndex >= 0 ? selectedIndex : 0);
+        setOpen(true);
+      }
+      return;
+    }
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); setActive((a) => (a + 1) % options.length); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((a) => (a - 1 + options.length) % options.length); }
+    else if (e.key === 'Home') { e.preventDefault(); setActive(0); }
+    else if (e.key === 'End') { e.preventDefault(); setActive(options.length - 1); }
+    else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(active >= 0 ? active : 0); }
+    else if (e.key === 'Tab') { close(); }
+    else if (e.key.length === 1 && /\S/.test(e.key)) {
+      const t = typeRef.current;
+      t.text = (t.text + e.key).toLowerCase().slice(-12);
+      clearTimeout(t.timer);
+      t.timer = setTimeout(() => { t.text = ''; }, 600);
+      const idx = options.findIndex((o) => String(o.label).toLowerCase().startsWith(t.text));
+      if (idx >= 0) setActive(idx);
+    }
+  }
+
+  React.useEffect(() => {
+    if (!open || active < 0) return;
+    document.getElementById(`${safeId}-opt-${active}`)?.scrollIntoView({ block: 'nearest' });
+  }, [open, active, safeId]);
+
+  return (
+    <div ref={rootRef} className={`cselect ${className}`}>
+      <button
+        type="button"
+        className={`cselect-btn${selected ? '' : ' is-placeholder'}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        aria-activedescendant={open && active >= 0 ? `${safeId}-opt-${active}` : undefined}
+        disabled={disabled}
+        onClick={() => { if (open) close(); else { setActive(selectedIndex >= 0 ? selectedIndex : 0); setOpen(true); } }}
+        onKeyDown={onButtonKey}
+      >
+        <span className="cselect-value">{selected ? selected.label : placeholder}</span>
+        <ChevronDownIcon />
+      </button>
+      {open && (
+        <ul className="cselect-list" role="listbox" id={`${safeId}-list`} aria-label={ariaLabel} tabIndex={-1}>
+          {options.map((opt, i) => (
+            <li
+              key={String(opt.value) + '-' + i}
+              id={`${safeId}-opt-${i}`}
+              role="option"
+              aria-selected={String(opt.value) === String(value)}
+              className={`cselect-opt${i === active ? ' active' : ''}${String(opt.value) === String(value) ? ' selected' : ''}`}
+              onClick={() => pick(i)}
+              onMouseEnter={() => setActive(i)}
+            >
+              <span>{opt.label}</span>
+              {String(opt.value) === String(value) && <CheckMark />}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+const ID_MONTHS = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+
+export function MonthPicker({ y, m, onChange, ariaLabel = 'Pilih bulan dan tahun' }) {
+  const [open, setOpen] = useState(false);
+  const [year, setYear] = useState(y);
+  const rootRef = React.useRef(null);
+
+  React.useEffect(() => { if (!open) setYear(y); }, [y, open ]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
+  }, [open ]);
+
+  function onGridKey(e) {
+    const btns = [...rootRef.current.querySelectorAll('.mp-month')];
+    const idx = btns.indexOf(document.activeElement);
+    if (idx < 0) return;
+    let next = null;
+    if (e.key === 'ArrowRight') next = idx + 1;
+    else if (e.key === 'ArrowLeft') next = idx - 1;
+    else if (e.key === 'ArrowDown') next = idx + 3;
+    else if (e.key === 'ArrowUp') next = idx - 3;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = btns.length - 1;
+    if (next !== null && btns[next]) { e.preventDefault(); btns[next].focus(); }
+  }
+
+  return (
+    <div ref={rootRef} className="mpick">
+      <button
+        type="button"
+        className="cselect-btn mpick-btn"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="cselect-value">{ID_MONTHS[m - 1]} {y}</span>
+        <CalendarIcon size={18} />
+      </button>
+      {open && (
+        <div className="mpick-pop" role="dialog" aria-label={ariaLabel}>
+          <div className="mpick-year">
+            <button type="button" className="icon-btn" aria-label="Tahun sebelumnya" onClick={() => setYear((v) => v - 1)}><ChevronLeftIcon /></button>
+            <strong>{year}</strong>
+            <button type="button" className="icon-btn" aria-label="Tahun berikutnya" onClick={() => setYear((v) => v + 1)}><ChevronRightIcon /></button>
+          </div>
+          <div className="mpick-grid" onKeyDown={onGridKey}>
+            {ID_MONTHS.map((name, i) => (
+              <button
+                key={name}
+                type="button"
+                className={`mp-month${year === y && i + 1 === m ? ' selected' : ''}`}
+                autoFocus={year === y && i + 1 === m}
+                onClick={() => { onChange?.({ y: year, m: i + 1 }); setOpen(false); }}
+              >
+                {name.slice(0, name.length > 7 ? 4 : name.length)}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

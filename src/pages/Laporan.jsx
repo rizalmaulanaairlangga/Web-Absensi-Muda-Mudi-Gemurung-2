@@ -3,7 +3,7 @@ import { useApp } from '../lib/store.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { idbGet } from '../lib/idb.js';
 import { todayJakarta, monthLabel, formatID } from '../lib/dates.js';
-import { BarChart, Empty } from '../components/ui.jsx';
+import { BarChart, Empty, CustomSelect, MonthPicker } from '../components/ui.jsx';
 import { exportWorkbook } from '../lib/exportExcel.js';
 
 const EXPORT_OPTS = [
@@ -160,17 +160,16 @@ export default function Laporan() {
         <h2 className="card-title">Laporan</h2>
         <p className="card-desc">{monthLabel(ym.y, ym.m)} • Pengajian {jenis === 'umum' ? 'Umum' : jenis === 'khusus' ? 'Khusus' : 'Semua'}</p>
         <div className="row cols-3">
-          <label className="field"><span>Bulan</span><input className="input" type="month" value={`${ym.y}-${String(ym.m).padStart(2, '0')}`} onChange={(e) => { const [y, m] = e.target.value.split('-').map(Number); if (y && m) setYm({ y, m }); }} /></label>
+          <div className="field"><span>Bulan</span><MonthPicker y={ym.y} m={ym.m} onChange={setYm} ariaLabel="Pilih bulan laporan" /></div>
           <label className="field"><span>Jenis kegiatan</span>
-            <select className="input" value={jenis} onChange={(e) => setJenis(e.target.value)}>
-              <option value="semua">Semua</option><option value="umum">Pengajian Umum</option><option value="khusus">Pengajian Khusus</option>
-            </select>
+            <CustomSelect value={jenis} ariaLabel="Jenis kegiatan" placeholder="Pilih jenis"
+              options={[{ value: 'semua', label: 'Semua' }, { value: 'umum', label: 'Pengajian Umum' }, { value: 'khusus', label: 'Pengajian Khusus' }]}
+              onChange={setJenis} />
           </label>
           <label className="field"><span>Anggota</span>
-            <select className="input" value={anggota} onChange={(e) => setAnggota(e.target.value)}>
-              <option value="semua">Semua anggota</option>
-              {calc.perMember.map((m) => <option key={m.id} value={m.id}>{m.nickname || m.full_name}</option>)}
-            </select>
+            <CustomSelect value={anggota} ariaLabel="Filter anggota" placeholder="Semua anggota"
+              options={[{ value: 'semua', label: 'Semua anggota' }, ...calc.perMember.map((m) => ({ value: m.id, label: m.nickname || m.full_name }))]}
+              onChange={setAnggota} />
           </label>
         </div>
       </div>
@@ -248,7 +247,7 @@ export default function Laporan() {
           ))}
         </div>
         <div className="row cols-2">
-          <label className="field"><span>Periode</span><input className="input" type="month" value={`${ym.y}-${String(ym.m).padStart(2, '0')}`} onChange={(e) => { const [y, m] = e.target.value.split('-').map(Number); if (y && m) setYm({ y, m }); }} /></label>
+          <div className="field"><span>Periode</span><MonthPicker y={ym.y} m={ym.m} onChange={setYm} ariaLabel="Pilih periode export" /></div>
           <label className="field"><span>Format</span><input className="input" value="XLSX (beberapa sheet)" readOnly /></label>
         </div>
         <button className="btn btn-primary btn-block" disabled={exporting} onClick={onExport}>{exporting ? 'Membuat file...' : `Export ${monthLabel(ym.y, ym.m)}`}</button>

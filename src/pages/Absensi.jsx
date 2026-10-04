@@ -5,7 +5,7 @@ import { idbGet, idbSet } from '../lib/idb.js';
 import { todayJakarta, toISODate, formatID, dayName, dayOfWeek, isWithinWindow, windowOpenAt, canEdit, monthLabel } from '../lib/dates.js';
 import { surahName } from '../lib/quran.js';
 import { DEFAULT_ABSENCE, DEFAULT_STATUS, DEFAULT_HADITH, DEFAULT_FREE, DEFAULT_SPECIAL_TYPES, DEFAULT_SPEAKERS, guestSeed } from '../lib/seed.js';
-import { Modal, Empty, ChevronLeftIcon, ChevronRightIcon, ClockIcon, PlusIcon } from '../components/ui.jsx';
+import { Modal, Empty, ChevronLeftIcon, ChevronRightIcon, ClockIcon, PlusIcon, CustomSelect } from '../components/ui.jsx';
 
 function timeRange(start, end) {
   const s = String(start || '').slice(0, 5);
@@ -100,6 +100,7 @@ export default function Absensi() {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [mat, setMat] = useState({ quran: true, hadith: false, nasehat: true, free: false, surah: '36', ayat: '1-10', pemateriQ: '', hadithId: '', halaman: '', pemateriH: '', nasehatBy: '', freeId: '', freeBy: '' });
+  const [specialType, setSpecialType] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -360,12 +361,16 @@ export default function Absensi() {
               const izinVal = a.izin || '';
               return (
                 <div className="member-row" key={m.id}>
-                  <input type="checkbox" checked={!!a.hadir} disabled={!!izinVal} onChange={(e) => setHadir(m.id, e.target.checked)} aria-label={`Hadir ${m.nickname}`} />
-                  <span className="member-name">{m.nickname}</span>
-                  <select value={izinVal} disabled={!!a.hadir} onChange={(e) => setIzin(m.id, e.target.value)} aria-label={`Izin ${m.nickname}`}>
-                    <option value="">Tidak ada izin</option>
-                    {(store.absenceTypes || []).map((t) => <option key={t.id || t.name} value={t.name}>{t.name}</option>)}
-                  </select>
+                  <input type="checkbox" checked={!!a.hadir} disabled={!!izinVal} onChange={(e) => setHadir(m.id, e.target.checked)} aria-label={`Hadir ${m.nickname || m.full_name}`} />
+                  <span className="member-name">{m.nickname || m.full_name}</span>
+                  <CustomSelect
+                    value={izinVal}
+                    ariaLabel={`Izin ${m.nickname || m.full_name}`}
+                    placeholder="Tidak ada izin"
+                    disabled={!!a.hadir}
+                    options={[{ value: '', label: 'Tidak ada izin' }, ...(store.absenceTypes || []).map((t) => ({ value: t.name, label: t.name }))]}
+                    onChange={(v) => setIzin(m.id, v)}
+                  />
                 </div>
               );
             })}
@@ -396,14 +401,19 @@ export default function Absensi() {
         </div>
 
         <label className="field"><span>Pilih jadwal</span>
-          <select className="input" value={selectedKey || ''} onChange={(e) => { setSelectedKey(e.target.value); setEditing(false); setAnswers({}); }}>
-            {(formOccs.length ? formOccs : store.occurrences).map((o) => {
+          <CustomSelect
+            value={selectedKey || ''}
+            ariaLabel="Pilih jadwal"
+            placeholder="Pilih jadwal"
+            options={(formOccs.length ? formOccs : store.occurrences).map((o) => {
               const key = (!String(o.id).startsWith('virt-')) ? o.id : o.id;
-              return (
-                <option key={o.id} value={o.id}>{formatID(o.occurrence_date)} • {timeRange(o.occurrence_time, o.occurrence_end_time)}{store.attendance?.[key]?.length ? ' • Sudah diisi' : ''}{store.holidays?.[key] ? ' • Libur' : ''}</option>
-              );
+              return {
+                value: o.id,
+                label: `${formatID(o.occurrence_date)} • ${timeRange(o.occurrence_time, o.occurrence_end_time)}${store.attendance?.[key]?.length ? ' • Sudah diisi' : ''}${store.holidays?.[key] ? ' • Libur' : ''}`,
+              };
             })}
-          </select>
+            onChange={(v) => { setSelectedKey(v); setEditing(false); setAnswers({}); }}
+          />
         </label>
 
         {!hasScheduleToday && <div className="banner warn"><span>Hari ini masih hari {['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'][todayDow]}. Pengajian berikutnya mengikuti jadwal rutin yang tersedia.</span></div>}
@@ -441,10 +451,9 @@ export default function Absensi() {
                   </div>
                   {mat.surah && !surah && <p className="field-error">Nomor surat harus berada di antara 1-114.</p>}
                   <label className="field"><span>Pemateri</span>
-                    <select className="input" value={mat.pemateriQ} onChange={(e) => setMat({ ...mat, pemateriQ: e.target.value })}>
-                      <option value="">Pilih pemateri</option>
-                      {(store.speakers || []).map((s) => <option key={s.id || s.name} value={s.name}>{s.name}</option>)}
-                    </select>
+                    <CustomSelect value={mat.pemateriQ} ariaLabel="Pemateri Al-Quran" placeholder="Pilih pemateri"
+                      options={[{ value: '', label: 'Pilih pemateri' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
+                      onChange={(v) => setMat({ ...mat, pemateriQ: v })} />
                   </label>
                 </div>
               )}
@@ -455,18 +464,16 @@ export default function Absensi() {
                 <div className="material-card-body">
                   <div className="row cols-2">
                     <label className="field"><span>Hadist</span>
-                      <select className="input" value={mat.hadithId} onChange={(e) => setMat({ ...mat, hadithId: e.target.value })}>
-                        <option value="">Pilih hadist</option>
-                        {(store.hadith || []).map((h) => <option key={h.id || h.name} value={h.name}>{h.name}</option>)}
-                      </select>
+                      <CustomSelect value={mat.hadithId} ariaLabel="Pilih hadist" placeholder="Pilih hadist"
+                        options={[{ value: '', label: 'Pilih hadist' }, ...(store.hadith || []).map((h) => ({ value: h.name, label: h.name }))]}
+                        onChange={(v) => setMat({ ...mat, hadithId: v })} />
                     </label>
                     <label className="field"><span>Halaman</span><input className="input" value={mat.halaman} onChange={(e) => setMat({ ...mat, halaman: e.target.value })} /></label>
                   </div>
                   <label className="field"><span>Pemateri</span>
-                    <select className="input" value={mat.pemateriH} onChange={(e) => setMat({ ...mat, pemateriH: e.target.value })}>
-                      <option value="">Pilih pemateri</option>
-                      {(store.speakers || []).map((s) => <option key={s.id || s.name} value={s.name}>{s.name}</option>)}
-                    </select>
+                    <CustomSelect value={mat.pemateriH} ariaLabel="Pemateri Hadist" placeholder="Pilih pemateri"
+                      options={[{ value: '', label: 'Pilih pemateri' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
+                      onChange={(v) => setMat({ ...mat, pemateriH: v })} />
                   </label>
                 </div>
               )}
@@ -476,10 +483,9 @@ export default function Absensi() {
               {mat.nasehat && (
                 <div className="material-card-body">
                   <label className="field"><span>Penyampai nasehat</span>
-                    <select className="input" value={mat.nasehatBy} onChange={(e) => setMat({ ...mat, nasehatBy: e.target.value })}>
-                      <option value="">Pilih penyampai</option>
-                      {(store.speakers || []).map((s) => <option key={s.id || s.name} value={s.name}>{s.name}</option>)}
-                    </select>
+                    <CustomSelect value={mat.nasehatBy} ariaLabel="Penyampai nasehat" placeholder="Pilih penyampai"
+                      options={[{ value: '', label: 'Pilih penyampai' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
+                      onChange={(v) => setMat({ ...mat, nasehatBy: v })} />
                   </label>
                 </div>
               )}
@@ -490,16 +496,14 @@ export default function Absensi() {
                 <div className="material-card-body">
                   <div className="row cols-2">
                     <label className="field"><span>Kegiatan</span>
-                      <select className="input" value={mat.freeId} onChange={(e) => setMat({ ...mat, freeId: e.target.value })}>
-                        <option value="">Pilih kegiatan</option>
-                        {(store.free || []).map((f) => <option key={f.id || f.name} value={f.name}>{f.name}</option>)}
-                      </select>
+                      <CustomSelect value={mat.freeId} ariaLabel="Pilih kegiatan" placeholder="Pilih kegiatan"
+                        options={[{ value: '', label: 'Pilih kegiatan' }, ...(store.free || []).map((f) => ({ value: f.name, label: f.name }))]}
+                        onChange={(v) => setMat({ ...mat, freeId: v })} />
                     </label>
                     <label className="field"><span>Penanggung jawab</span>
-                      <select className="input" value={mat.freeBy} onChange={(e) => setMat({ ...mat, freeBy: e.target.value })}>
-                        <option value="">Pilih penanggung jawab</option>
-                        {(store.speakers || []).map((s) => <option key={s.id || s.name} value={s.name}>{s.name}</option>)}
-                      </select>
+                      <CustomSelect value={mat.freeBy} ariaLabel="Pilih penanggung jawab" placeholder="Pilih penanggung jawab"
+                        options={[{ value: '', label: 'Pilih penanggung jawab' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
+                        onChange={(v) => setMat({ ...mat, freeBy: v })} />
                     </label>
                   </div>
                 </div>
@@ -533,7 +537,7 @@ export default function Absensi() {
             <tbody>
               {store.members.filter((m) => m.active).map((m) => (
                 <tr key={m.id}>
-                  <td>{m.nickname}</td>
+                  <td>{m.nickname || m.full_name}</td>
                   {store.occurrences.map((o) => {
                     if (store.holidays?.[o.id]) return <td key={o.id} className="cell-libur">LIBUR</td>;
                     const rec = (store.attendance?.[o.id] || []).find((a) => (a.member_id || a.memberId) === m.id);
@@ -569,7 +573,9 @@ export default function Absensi() {
       {showSpecial && (
         <Modal title="Pengajian khusus" onClose={() => setShowSpecial(false)} foot={<><button className="btn" onClick={() => setShowSpecial(false)}>Batal</button><button className="btn btn-primary" onClick={() => { setShowSpecial(false); toast('Pengajian khusus tersimpan sebagai draf lokal. Lengkapi lewat menu Admin bila perlu.'); }}>Simpan</button></>}>
           <label className="field"><span>Jenis kegiatan</span>
-            <select className="input">{(store.specialTypes || []).map((t) => <option key={t.id || t.name}>{t.name}</option>)}</select>
+            <CustomSelect value={specialType} ariaLabel="Jenis kegiatan khusus" placeholder="Pilih jenis kegiatan"
+              options={(store.specialTypes || []).map((t) => ({ value: t.name, label: t.name }))}
+              onChange={setSpecialType} />
           </label>
           <div className="row cols-2">
             <label className="field"><span>Tanggal</span><input className="input" type="date" defaultValue={toISODate(todayJakarta())} /></label>

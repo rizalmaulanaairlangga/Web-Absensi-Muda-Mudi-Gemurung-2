@@ -360,3 +360,135 @@ select.input option,
 [data-theme="dark"] .member-row select {
   background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23CBD5E1' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
+@media (max-width: 480px) {
+  .member-row select { max-width: 128px; }
+}
+
+/* Skala tablet */
+@media (min-width: 768px) {
+  body { font-size: 15.5px; }
+  .card { padding: 22px; }
+  .card-title { font-size: 18px; }
+  .btn { min-height: 46px; }
+  .input, select.input { min-height: 46px; }
+  .cselect-btn { min-height: 46px; }
+  .member-group { padding: 14px; }
+}
+
+/* Skala laptop/desktop: aplikasi terasa lega dan mudah dibaca */
+@media (min-width: 1024px) {
+  body { font-size: 16px; }
+  .app-content { max-width: 1200px; padding: 28px 32px calc(96px + env(safe-area-inset-bottom)); }
+  .app-header { padding: 14px 28px; }
+  .brand-mark { width: 40px; height: 40px; font-size: 19px; }
+  .brand-title { font-size: 17px; }
+  .status-pill { font-size: 13px; padding: 8px 14px; }
+  .card { padding: 24px 26px; }
+  .card + .card { margin-top: 20px; }
+  .card-title { font-size: 21px; }
+  .card-desc { font-size: 14.5px; }
+  .app-content h3 { font-size: 20px; }
+  .login-card h1 { font-size: 30px !important; }
+  .btn { min-height: 48px; padding: 12px 22px; font-size: 15.5px; }
+  .btn-quick { min-height: 46px; padding: 10px 18px; font-size: 14.5px; }
+  .icon-btn { min-width: 44px; min-height: 44px; }
+  .nav-item { font-size: 13px; min-height: 66px; }
+  .nav-item svg { width: 23px; height: 23px; }
+  .input, select.input { min-height: 48px; font-size: 15.5px; padding: 12px 14px; }
+  select.input { padding-right: 40px; }
+  .field > span { font-size: 14px; }
+  .hint { font-size: 13.5px; }
+  .cselect-btn { min-height: 48px; font-size: 15.5px; padding: 12px 14px; }
+  .cselect-opt { padding: 12px 14px; font-size: 15px; }
+  .member-group { padding: 16px; }
+  .member-group-title { font-size: 15px; }
+  .member-row { padding: 12px 14px; }
+  .member-row input[type="checkbox"] { width: 24px; height: 24px; }
+  .member-name { font-size: 15px; }
+  table.att { font-size: 14.5px; }
+  table.att th, table.att td { padding: 10px 12px; }
+  .stat-num { font-size: 30px; }
+  .stat-label { font-size: 13.5px; }
+  .legend { font-size: 14px; }
+  .banner { font-size: 14.5px; }
+  .mp-month { min-height: 44px; font-size: 14px; }
+  .material-card { padding: 14px; margin-bottom: 16px; }
+  .material-card-body { padding: 14px; }
+  .admin-sub { padding: 18px; }
+  .schedule-row { padding: 14px; }
+  .schedule-day { font-size: 15.5px; }
+  .export-check { font-size: 14.5px; padding: 12px 14px; }
+  .modal { max-width: 560px; }
+  .modal-body { padding: 20px; }
+}
+
+@media (min-width: 1280px) {
+  .app-content { max-width: 1280px; }
+  body { font-size: 16.5px; }
+  .card { padding: 26px 28px; }
+  .card-title { font-size: 22px; }
+  .login-card h1 { font-size: 32px !important; }
+  .nav-item svg { width: 24px; height: 24px; }
+}
+
+/* Dropdown kustom yang konsisten dengan design system */
+.cselect { position: relative; }
+.cselect-btn {
+  width: 100%; min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border-radius: 10px; border: 1.5px solid var(--border-default);
+  background: var(--bg-surface-secondary); color: var(--text-primary);
+  padding: 10px 12px; font-size: 14.5px; font-weight: 500; cursor: pointer; text-align: left;
+  transition: border-color 170ms ease, box-shadow 170ms ease, background-color 170ms ease;
+}
+.cselect-btn:hover:not(:disabled) { border-color: var(--color-primary-400); background: var(--color-primary-50); }
+.cselect-btn:focus-visible { outline: none; border-color: var(--color-primary-500); box-shadow: 0 0 0 3px rgba(78,168,222,0.18); }
+.cselect-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.cselect-btn.is-placeholder .cselect-value { color: var(--text-muted); }
+.cselect-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cselect-chevron { flex: none; color: var(--text-muted); transition: transform 170ms ease; }
+.cselect-btn[aria-expanded="true"] .cselect-chevron { transform: rotate(180deg); }
+.cselect-list {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 45;
+  margin: 0; padding: 6px; list-style: none;
+  background: var(--bg-surface); border: 1.5px solid var(--border-default);
+  border-radius: 12px; box-shadow: var(--shadow-lg);
+  max-height: 248px; overflow: auto;
+}
+.cselect-opt {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; color: var(--text-primary);
+}
+.cselect-opt.active { background: var(--color-primary-50); }
+.cselect-opt.selected { font-weight: 700; }
+.cselect-opt svg { color: var(--color-primary-600); flex: none; }
+
+/* Pemilih bulan-tahun */
+.mpick { position: relative; }
+.mpick-btn svg { flex: none; color: var(--text-muted); }
+.mpick-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 45;
+  width: 300px; max-width: calc(100vw - 48px);
+  background: var(--bg-surface); border: 1.5px solid var(--border-default);
+  border-radius: 14px; box-shadow: var(--shadow-lg); padding: 12px;
+}
+.mpick-year { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.mpick-year strong { font-size: 15px; }
+.mpick-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.mp-month {
+  min-height: 42px; border-radius: 10px; border: 1.5px solid var(--border-default);
+  background: var(--bg-surface-secondary); color: var(--text-primary);
+  font-size: 13.5px; font-weight: 650; cursor: pointer;
+  transition: border-color 150ms ease, background-color 150ms ease, transform 150ms ease;
+}
+.mp-month:hover { border-color: var(--color-primary-400); background: var(--color-primary-50); transform: translateY(-1px); }
+.mp-month.selected { background: var(--color-primary-500); border-color: var(--color-primary-500); color: #fff; }
+.mp-month:focus-visible { outline: 2px solid var(--color-primary-500); outline-offset: 2px; }
+
+/* Tabel anggota */
+.members-table tbody tr:nth-child(even) td { background: var(--bg-surface-secondary); }
+.members-table tbody tr:nth-child(even) td:first-child { background: var(--bg-surface-secondary); }
+.members-table tbody tr:hover td { background: var(--color-primary-50); }
+.members-table tbody tr:hover td:first-child { background: var(--color-primary-50); }
+[data-theme="dark"] .members-table tbody tr:hover td,
+[data-theme="dark"] .members-table tbody tr:hover td:first-child { background: #14293A; }
+.members-table tr.row-inactive td { color: var(--text-muted); }
