@@ -91,7 +91,122 @@ export async function replayAttendanceOp(op, { force = false } = {}) {
 
 export async function replayOp(op, opts = {}) {
   if (op.operation_type === 'SAVE_ATTENDANCE') return replayAttendanceOp(op, opts);
+  if (op.operation_type === 'SAVE_SPECIAL_EVENT') return replaySpecialEventOp(op, opts);
+  if (op.operation_type === 'SAVE_SPECIAL_ATTENDANCE') return replaySpecialAttendanceOp(op, opts);
   throw new Error('Jenis operasi tidak dikenal.');
+}
+
+export async function replaySpecialEventOp(op) {
+  if (!supabase) throw new Error('Backend belum dikonfigurasi.');
+  const payload = op.payload || {};
+  const ev = payload.event || {};
+  const accountId = op.account_id;
+  const { data: saved, error: evErr } = await withTimeout(supabase.from('special_events').upsert({
+    id: ev.id,
+    account_id: accountId,
+    event_type_id: ev.event_type_id || null,
+    event_type_snapshot: ev.event_type_snapshot || null,
+    event_date: ev.event_date,
+    day_name: ev.day_name || null,
+    event_time: ev.event_time,
+    end_time: ev.end_time || null,
+    linked_holiday_occurrence_id: null,
+  }, { onConflict: 'id' }).select().single(), 20000);
+  if (evErr) throw evErr;
+  const rep = payload.replacement;
+  if (rep && rep.recurring_schedule_id && rep.occurrence_date) {
+    const { data: dbOcc, error: occErr } = await withTimeout(supabase.from('schedule_occurrences').upsert({
+      account_id: accountId,
+      recurring_schedule_id: rep.recurring_schedule_id,
+      occurrence_date: rep.occurrence_date,
+      occurrence_time: rep.occurrence_time,
+      occurrence_end_time: rep.occurrence_end_time || null,
+      day_name: rep.day_name || null,
+    }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date' }).select().single(), 20000);
+    if (occErr) throw occErr;
+    await withTimeout(supabase.from('schedule_occurrences').update({ is_holiday: true }).eq('id', dbOcc.id), 15000);
+    const { error: holErr } = await withTimeout(supabase.from('holidays').upsert({
+      account_id: accountId,
+      occurrence_id: dbOcc.id,
+      holiday_date: rep.occurrence_date,
+      day_name: rep.day_name || null,
+      reason: rep.reason || 'Digantikan pengajian khusus',
+    }, { onConflict: 'occurrence_id' }), 15000);
+    if (holErr) throw holErr;
+    const { data: verify } = await withTimeout(supabase.from('holidays').select('id').eq('occurrence_id', dbOcc.id).maybeSingle(), 15000);
+    if (!verify) throw new Error('Event tersimpan, tetapi status libur belum tercatat. Coba lagi.');
+    await withTimeout(supabase.from('special_events').update({ linked_holiday_occurrence_id: dbOcc.id }).eq('id', saved.id), 15000);
+  }
+  try {
+    await supabase.from('audit_logs').insert({
+      account_id: accountId,
+      action: 'SYNC_SPECIAL_EVENT',
+      entity_type: 'special_event',
+      entity_id: saved.id,
+      new_data: { opId: op.id },
+    });
+  } catch { /* audit best-effort */ }
+  return saved.id;
+}
+
+export async function replaySpecialAttendanceOp(op, opts = {}) {
+  if (!supabase) throw new Error('Backend belum dikonfigurasi.');
+  const payload = op.payload || {};
+  const ev = payload.event || {};
+  const accountId = op.account_id;
+  let eventId = ev.id;
+  const { data: existing } = await withTimeout(supabase.from('special_events').select('id').eq('id', ev.id).maybeSingle(), 15000);
+  if (!existing) {
+    const { data: created, error: evErr } = await withTimeout(supabase.from('special_events').upsert({
+      id: ev.id,
+      account_id: accountId,
+      event_type_id: ev.event_type_id || null,
+      event_type_snapshot: ev.event_type_snapshot || null,
+      event_date: ev.event_date,
+      day_name: ev.day_name || null,
+      event_time: ev.event_time,
+      end_time: ev.end_time || null,
+    }, { onConflict: 'id' }).select().single(), 20000);
+    if (evErr) throw evErr;
+    eventId = created.id;
+  }
+  if (!opts.force) {
+    const { data: serverRows, error: selErr } = await withTimeout(
+      supabase.from('special_attendance').select('member_id,status,absence_name_snapshot,created_at').eq('special_event_id', eventId), 20000,
+    );
+    if (selErr) throw selErr;
+    if ((serverRows || []).length > 0) {
+      const serverMax = Math.max(...serverRows.map((r) => new Date(r.created_at || 0).getTime()));
+      if (serverMax > (op.created_at || 0) && rowsDiffer(payload.rows, serverRows)) {
+        const conflict = new Error('conflict');
+        conflict.conflict = true;
+        conflict.serverRows = serverRows;
+        conflict.dbId = eventId;
+        throw conflict;
+      }
+    }
+  }
+  for (const r of payload.rows || []) {
+    const { error } = await withTimeout(supabase.from('special_attendance').upsert({
+      account_id: accountId,
+      special_event_id: eventId,
+      member_id: r.member_id,
+      status: r.status,
+      absence_name_snapshot: r.absence || null,
+      member_name_snapshot: r.member_name,
+    }, { onConflict: 'account_id,special_event_id,member_id' }), 30000);
+    if (error) throw error;
+  }
+  try {
+    await supabase.from('audit_logs').insert({
+      account_id: accountId,
+      action: 'SYNC_SPECIAL_ATTENDANCE',
+      entity_type: 'special_attendance',
+      entity_id: eventId,
+      new_data: { count: (payload.rows || []).length, opId: op.id },
+    });
+  } catch { /* audit best-effort */ }
+  return eventId;
 }
 
 export function touchOp(op, patch) {

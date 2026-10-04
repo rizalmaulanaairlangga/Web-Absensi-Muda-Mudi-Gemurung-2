@@ -1,12 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useApp, clientId, withTimeout } from '../lib/store.jsx';
 import { createAttendanceOp } from '../services/sync/syncQueue.js';
+import { loadMastersCache, saveMastersCache, ensureMasterLists } from '../lib/masters.js';
+import { SpecialEventModal, SpecialDetail } from '../components/SpecialEvent.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { idbGet, idbSet } from '../lib/idb.js';
 import { todayJakarta, toISODate, formatID, dayName, dayOfWeek, isWithinWindow, windowOpenAt, canEdit, monthLabel } from '../lib/dates.js';
 import { surahName } from '../lib/quran.js';
 import { DEFAULT_ABSENCE, DEFAULT_STATUS, DEFAULT_HADITH, DEFAULT_FREE, DEFAULT_SPECIAL_TYPES, DEFAULT_SPEAKERS, guestSeed } from '../lib/seed.js';
-import { Modal, Empty, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, ChevronDownIcon, ClockIcon, PlusIcon, CustomSelect, EyeIcon, RefreshIcon, TrashIcon } from '../components/ui.jsx';
+import { Modal, Empty, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, ChevronDownIcon, ClockIcon, PlusIcon, CustomSelect, EyeIcon, RefreshIcon, TrashIcon, PencilIcon, MonthPicker } from '../components/ui.jsx';
+import MemberRow from '../components/MemberRow.jsx';
 
 function timeRange(start, end) {
   const s = String(start || '').slice(0, 5);
@@ -96,28 +100,7 @@ function occKeyOf(occ) {
   return occ.localKey || occ.id;
 }
 
-const MASTER_TABLES = {
-  speakers: 'speakers',
-  hadith: 'hadith_materials',
-  free: 'free_activity_types',
-  specialTypes: 'special_event_types',
-};
-
-async function loadMastersCache(aid) {
-  if (!aid) return {};
-  return await idbGet(`masters-${aid}`, {});
-}
-
-async function saveMastersCache(aid, patch) {
-  if (!aid) return {};
-  const cur = await idbGet(`masters-${aid}`, {});
-  const next = { ...cur, ...patch, savedAt: Date.now() };
-  await idbSet(`masters-${aid}`, next);
-  return next;
-}
-
 const MAT_OFF = { quran: false, hadith: false, nasehat: false, free: false };
-
 export default function Absensi() {
   const {
     account, isGuest, online, toast, enqueue, supabaseReady,
@@ -131,8 +114,18 @@ export default function Absensi() {
   const [formOccs, setFormOccs] = useState([]);
   const [selectedKey, setSelectedKey] = useState(null);
   const [answers, setAnswers] = useState({});
+  const [params, setParams] = useSearchParams();
+  const specialId = params.get('special');
+  const showCreateSpecial = params.get('newSpecial') === '1';
+  const [localSpecials, setLocalSpecials] = useState({});
+  const [editOcc, setEditOcc] = useState(null);
+  const [showEditPicker, setShowEditPicker] = useState(false);
+  const [editTab, setEditTab] = useState('rutin');
+  const [editYm, setEditYm] = useState({ y: now.getFullYear(), m: now.getMonth() + 1 });
+  const [editRutin, setEditRutin] = useState([]);
+  const [editSpecials, setEditSpecials] = useState([]);
+  const [editLoading, setEditLoading] = useState(false);
   const [showHoliday, setShowHoliday] = useState(false);
-  const [showSpecial, setShowSpecial] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [maleOpen, setMaleOpen] = useState(true);
@@ -145,48 +138,14 @@ export default function Absensi() {
   const [mat, setMat] = useState({ ...MAT_OFF, surah: '', ayat: '', pemateriQ: '', hadithId: '', halaman: '', pemateriH: '', nasehatBy: '', freeId: '', freeBy: '' });
   const [collapsedSecs, setCollapsedSecs] = useState({ quran: false, hadith: false, nasehat: false, free: false });
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [specialType, setSpecialType] = useState('');
-
-  useEffect(() => {
-    if (!showSpecial || !account || isGuest || !supabaseReady) return;
-    if ((storeRef.current?.specialTypes || []).length) return;
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
-    (async () => {
-      try {
-        const { data } = await supabase.from('special_event_types').select('*').eq('account_id', account.id).order('name');
-        const list = data || [];
-        setStore((p) => (p ? { ...p, specialTypes: list } : p));
-        await saveMastersCache(account.id, { specialTypes: list });
-      } catch { /* abaikan */ }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showSpecial]);
 
   async function ensureMasters(keys) {
     if (!account || isGuest || !supabaseReady) return;
-    const aid = account.id;
-    const need = keys.filter((k) => !(storeRef.current?.[k] || []).length);
-    if (!need.length) return;
-    const cached = await loadMastersCache(aid);
-    const fromCache = {};
-    const stillNeed = [];
-    need.forEach((k) => {
-      if ((cached[k] || []).length) fromCache[k] = cached[k];
-      else stillNeed.push(k);
-    });
-    if (Object.keys(fromCache).length) {
-      setStore((p) => (p ? { ...p, ...fromCache } : p));
-    }
-    if (!stillNeed.length) return;
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
     try {
-      const fetched = {};
-      await Promise.all(stillNeed.map(async (k) => {
-        const { data } = await supabase.from(MASTER_TABLES[k]).select('*').eq('account_id', aid).order('name');
-        fetched[k] = data || [];
-      }));
-      setStore((p) => (p ? { ...p, ...fetched } : p));
-      await saveMastersCache(aid, fetched);
+      const fetched = await ensureMasterLists(account.id, keys, storeRef.current, { online });
+      if (Object.keys(fetched).length) {
+        setStore((p) => (p ? { ...p, ...fetched } : p));
+      }
     } catch { /* abaikan, dropdown menampilkan status kosong */ }
   }
 
@@ -230,6 +189,8 @@ export default function Absensi() {
       hadith: mcached?.hadith?.length ? mcached.hadith : (snap.hadith || []),
       free: mcached?.free?.length ? mcached.free : (snap.free || []),
       specialTypes: mcached?.specialTypes?.length ? mcached.specialTypes : (snap.specialTypes || []),
+      specials: snap.specials || [],
+      specialAtt: snap.specialAtt || {},
       offline: typeof navigator !== 'undefined' && navigator.onLine === false,
     });
     setFormOccs(formList);
@@ -361,10 +322,12 @@ export default function Absensi() {
         const up = formList.find((o) => o.occurrence_date >= today) || formList[formList.length - 1];
         setSelectedKey(up.id);
       }
+      const prevSnap = await loadSnapshot(aid).catch(() => null);
       await saveSnapshot(aid, {
         members: s.members, absenceTypes: s.absenceTypes, schedules: s.schedules,
         lockHours: s.lockHours, speakers: s.speakers, hadith: s.hadith, free: s.free,
         specialTypes: s.specialTypes, occurrences: dbRows, attendance: attMap, holidays: holMap,
+        specials: prevSnap?.specials || [], specialAtt: prevSnap?.specialAtt || {},
       });
     } catch (e) {
       const netErr = !navigator.onLine || /failed to fetch|network|timeout/i.test(String(e?.message || e || ''));
@@ -462,10 +425,11 @@ export default function Absensi() {
 
   const occ = useMemo(() => {
     if (!store) return null;
+    if (editOcc) return editOcc;
     const inForm = formOccs.find((o) => o.id === selectedKey);
     if (inForm) return inForm;
     return formOccs[0] || null;
-  }, [store, formOccs, selectedKey]);
+  }, [store, formOccs, selectedKey, editOcc]);
 
   const attendanceKey = occKeyOf(occ);
   const submitted = useMemo(() => {
@@ -498,14 +462,14 @@ export default function Absensi() {
         const saved = key ? store.attendance?.[key] : null;
         if (saved?.length) {
           const map = {};
-          saved.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : {}; });
+          saved.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : { alpha: true }; });
           setAnswers(map);
         } else if (!isGuest && supabaseReady && online && occ.id && !String(occ.id).startsWith('virt-')) {
           try {
             const attDb = await withTimeout(supabase.from('attendance').select('*').eq('occurrence_id', occ.id), 15000);
             if ((attDb.data || []).length > 0) {
               const map = {};
-              attDb.data.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : {}; });
+              attDb.data.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : { alpha: true }; });
               setAnswers(map);
               setStore((p) => ({ ...p, attendance: { ...p.attendance, [occ.id]: attDb.data } }));
             }
@@ -551,6 +515,9 @@ export default function Absensi() {
   }
   function setIzin(id, v) {
     setAnswers((p) => ({ ...p, [id]: v ? { izin: v } : {} }));
+  }
+  function toggleAlpha(id) {
+    setAnswers((p) => ({ ...p, [id]: p[id]?.alpha ? {} : { alpha: true } }));
   }
 
   const windowOpen = occ ? isWithinWindow(occ.occurrence_date, occ.occurrence_time) : false;
@@ -714,24 +681,17 @@ export default function Absensi() {
         {open && list.length === 0 && <p className="hint">Belum ada anggota.</p>}
         {open && list.length > 0 && (
           <div className="member-rows">
-            {list.map((m) => {
-              const a = answers[m.id] || {};
-              const izinVal = a.izin || '';
-              return (
-                <div className="member-row" key={m.id}>
-                  <input type="checkbox" checked={!!a.hadir} disabled={!!izinVal} onChange={(e) => setHadir(m.id, e.target.checked)} aria-label={`Hadir ${m.nickname || m.full_name}`} />
-                  <span className="member-name">{m.nickname || m.full_name}</span>
-                  <CustomSelect
-                    value={izinVal}
-                    ariaLabel={`Izin ${m.nickname || m.full_name}`}
-                    placeholder="Tidak ada izin"
-                    disabled={!!a.hadir}
-                    options={[{ value: '', label: 'Tidak ada izin' }, ...(store.absenceTypes || []).map((t) => ({ value: t.name, label: t.name }))]}
-                    onChange={(v) => setIzin(m.id, v)}
-                  />
-                </div>
-              );
-            })}
+            {list.map((m) => (
+              <MemberRow
+                key={m.id}
+                m={m}
+                val={answers[m.id] || {}}
+                absenceOptions={store.absenceTypes || []}
+                onHadir={setHadir}
+                onIzin={setIzin}
+                onAlpha={toggleAlpha}
+              />
+            ))}
           </div>
         )}
       </section>
@@ -786,6 +746,87 @@ export default function Absensi() {
     setPickerOpen(false);
   }
 
+  async function onSpecialCreated(id, localEv) {
+    if (localEv && account) {
+      setLocalSpecials((p) => ({ ...p, [id]: localEv }));
+      try {
+        const snap = (await loadSnapshot(account.id)) || {};
+        if (snap.members) {
+          await saveSnapshot(account.id, { ...snap, specials: [...(snap.specials || []).filter((e) => e.id !== id), { ...localEv }] });
+        }
+      } catch { /* abaikan */ }
+    }
+    setParams({ special: id });
+  }
+
+  async function loadEditLists() {
+    if (!account) return;
+    setEditLoading(true);
+    try {
+      if (isGuest || !supabaseReady) {
+        const local = await idbGet('guest-data', null);
+        const occ = occurrencesForMonth(local?.schedules || store?.schedules || [], editYm.y, editYm.m);
+        setEditRutin(occ.map((o) => ({ ...o, submitted: Boolean((local?.attendance || {})[o.id]?.length), holiday: Boolean((local?.holidays || {})[o.id]) })));
+        setEditSpecials([]);
+      } else if (online) {
+        const aid = account.id;
+        const first = `${editYm.y}-${String(editYm.m).padStart(2, '0')}-01`;
+        const last = `${editYm.y}-${String(editYm.m).padStart(2, '0')}-31`;
+        const occDb = await withTimeout(supabase.from('schedule_occurrences').select('*').eq('account_id', aid).gte('occurrence_date', first).lte('occurrence_date', last).order('occurrence_date'), 20000);
+        const rows = (occDb.data || []).map((o) => ({
+          id: o.id, localKey: `${o.recurring_schedule_id}|${o.occurrence_date}`,
+          recurring_schedule_id: o.recurring_schedule_id, occurrence_date: o.occurrence_date,
+          occurrence_time: String(o.occurrence_time).slice(0, 5),
+          occurrence_end_time: o.occurrence_end_time ? String(o.occurrence_end_time).slice(0, 5) : null,
+          day_name: o.day_name, is_holiday: o.is_holiday,
+        }));
+        const ids = rows.map((o) => o.id);
+        let filled = new Set();
+        let holMap = {};
+        if (ids.length) {
+          const attDb = await withTimeout(supabase.from('attendance').select('occurrence_id').in('occurrence_id', ids), 20000);
+          filled = new Set((attDb.data || []).map((a) => a.occurrence_id));
+          const holDb = await withTimeout(supabase.from('holidays').select('occurrence_id').eq('account_id', aid).gte('holiday_date', first).lte('holiday_date', last), 20000);
+          holMap = Object.fromEntries((holDb.data || []).map((h) => [h.occurrence_id, true]));
+        }
+        setEditRutin(rows.map((o) => ({ ...o, submitted: filled.has(o.id), holiday: Boolean(holMap[o.id] || o.is_holiday) })));
+        const specDb = await withTimeout(supabase.from('special_events').select('*').eq('account_id', aid).gte('event_date', first).lte('event_date', last).order('event_date'), 20000);
+        const evs = specDb.data || [];
+        const evIds = evs.map((e) => e.id);
+        let evFilled = new Set();
+        if (evIds.length) {
+          const saDb = await withTimeout(supabase.from('special_attendance').select('special_event_id').in('special_event_id', evIds), 20000);
+          evFilled = new Set((saDb.data || []).map((a) => a.special_event_id));
+        }
+        setEditSpecials(evs.map((e) => ({ ...e, submitted: evFilled.has(e.id) })));
+        try {
+          const snap = (await loadSnapshot(account.id)) || {};
+          const map = new Map((snap.specials || []).map((x) => [x.id, x]));
+          evs.forEach((e) => map.set(e.id, e));
+          await saveSnapshot(account.id, { ...snap, specials: [...map.values()] });
+        } catch { /* abaikan */ }
+      } else {
+        const snap = await loadSnapshot(account.id);
+        const occ = (snap?.occurrences || []).filter((o) => (o.occurrence_date || '').startsWith(`${editYm.y}-${String(editYm.m).padStart(2, '0')}`));
+        setEditRutin(occ.map((o) => ({ ...o, submitted: Boolean((snap?.attendance || {})[o.id]?.length), holiday: Boolean((snap?.holidays || {})[o.id]) })));
+        setEditSpecials((snap?.specials || []).filter((e) => (e.event_date || '').startsWith(`${editYm.y}-${String(editYm.m).padStart(2, '0')}`)).map((e) => ({ ...e, submitted: Boolean((snap?.specialAtt || {})[e.id]?.length) })));
+      }
+    } catch {
+      toast('Gagal memuat daftar. Periksa koneksi lalu coba lagi.');
+    }
+    setEditLoading(false);
+  }
+
+  function openEditPicker() {
+    setEditYm({ ...tableYm });
+    setShowEditPicker(true);
+  }
+
+  useEffect(() => {
+    if (showEditPicker) loadEditLists();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showEditPicker, editTab, editYm.m, editYm.y]);
+
   return (
     <div>
       {isGuest && <div className="banner info"><span>Mode Tamu. Data yang digunakan adalah data demo dan akan dihapus otomatis.</span></div>}
@@ -797,6 +838,16 @@ export default function Absensi() {
         </div>
       )}
 
+      {specialId ? (
+        <SpecialDetail
+          eventId={specialId}
+          localEvent={localSpecials[specialId]}
+          members={store.members}
+          absenceTypes={store.absenceTypes}
+          onBack={() => setParams({})}
+          onChanged={() => {}}
+        />
+      ) : (
       <div className="card">
         <div>
           <h2 className="card-title">Absensi Pengajian</h2>
@@ -807,7 +858,7 @@ export default function Absensi() {
           <button type="button" className="btn-quick btn-libur" onClick={() => setShowHoliday(true)}>
             <ClockIcon /> Tandai Libur
           </button>
-          <button type="button" className="btn-quick btn-khusus" onClick={() => setShowSpecial(true)}>
+          <button type="button" className="btn-quick btn-khusus" onClick={() => setParams({ newSpecial: '1' })}>
             <PlusIcon /> Pengajian Khusus
           </button>
         </div>
@@ -824,7 +875,7 @@ export default function Absensi() {
                 label: `${formatID(o.occurrence_date)} • ${timeRange(o.occurrence_time, o.occurrence_end_time)}${store.attendance?.[key]?.length ? ' • Sudah diisi' : ''}${store.holidays?.[key] ? ' • Libur' : ''}`,
               };
             })}
-            onChange={(v) => { setSelectedKey(v); setEditing(false); setAnswers({}); }}
+            onChange={(v) => { setSelectedKey(v); setEditOcc(null); setEditing(false); setAnswers({}); }}
           />
         </label>
 
@@ -843,8 +894,9 @@ export default function Absensi() {
           <>
             <div className="legend" aria-label="Keterangan">
               <span className="lg"><span className="mark hadir">✓</span> Centang = Hadir</span>
-              <span className="lg"><span className="mark alpha">☐</span> Kosong + tidak memilih izin = Alpha</span>
               <span className="lg"><span className="mark izin">I</span> Dropdown izin = Izin</span>
+              <span className="lg"><span className="mark alpha">A</span> Tombol A = Alpha</span>
+              <span className="lg">Kosong = belum diisi, dihitung Alpha saat simpan</span>
             </div>
             <div className="member-groups">
               {renderGroup('LAKI-LAKI', 'male', males, maleOpen, setMaleOpen)}
@@ -1053,16 +1105,20 @@ export default function Absensi() {
         )}
       </div>
 
+      )}
       <div className="card">
         <div className="table-card-head">
           <div>
             <h3 className="card-title">Rekap Absensi</h3>
             <p className="card-desc">Tabel hanya untuk melihat. Perubahan lewat form Edit Kehadiran.</p>
           </div>
-          <div className="month-nav" aria-label="Navigasi bulan tabel">
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn" style={{ minHeight: 40 }} onClick={openEditPicker}><PencilIcon /> Edit Absensi</button>
+            <div className="month-nav" aria-label="Navigasi bulan tabel">
             <button className="icon-btn" onClick={() => setTableYm((p) => (p.m === 1 ? { y: p.y - 1, m: 12 } : { y: p.y, m: p.m - 1 }))} aria-label="Bulan sebelumnya"><ChevronLeftIcon /></button>
             <strong>{monthLabel(tableYm.y, tableYm.m)}</strong>
             <button className="icon-btn" onClick={() => setTableYm((p) => (p.m === 12 ? { y: p.y + 1, m: 1 } : { y: p.y, m: p.m + 1 }))} aria-label="Bulan berikutnya"><ChevronRightIcon /></button>
+          </div>
           </div>
         </div>
         {!tableVisible ? (
@@ -1134,18 +1190,69 @@ export default function Absensi() {
           <p>Jadwal <strong>{occ ? formatID(occ.occurrence_date) : ''}</strong> akan ditandai libur. Absensi tidak dapat diisi dan tidak dihitung dalam persentase.</p>
         </Modal>
       )}
-      {showSpecial && (
-        <Modal title="Pengajian khusus" onClose={() => setShowSpecial(false)} foot={<><button className="btn" onClick={() => setShowSpecial(false)}>Batal</button><button className="btn btn-primary" onClick={() => { setShowSpecial(false); toast('Pengajian khusus tersimpan sebagai draf lokal. Lengkapi lewat menu Admin bila perlu.'); }}>Simpan</button></>}>
-          <label className="field"><span>Jenis kegiatan</span>
-            <CustomSelect value={specialType} ariaLabel="Jenis kegiatan khusus" placeholder="Pilih jenis kegiatan"
-              options={(store.specialTypes || []).map((t) => ({ value: t.name, label: t.name }))}
-              onChange={setSpecialType} />
-          </label>
+      {showCreateSpecial && (
+        <SpecialEventModal
+          schedules={store.schedules}
+          onClose={() => setParams({})}
+          onCreated={(id, localEv) => onSpecialCreated(id, localEv)}
+        />
+      )}
+      {showEditPicker && (
+        <Modal title="Edit Absensi" onClose={() => setShowEditPicker(false)} foot={<button className="btn" onClick={() => setShowEditPicker(false)}>Tutup</button>}>
           <div className="row cols-2">
-            <label className="field"><span>Tanggal</span><input className="input" type="date" defaultValue={toISODate(todayJakarta())} /></label>
-            <label className="field"><span>Waktu</span><input className="input" type="time" defaultValue="19:30" /></label>
+            <div className="field"><span>Jenis jadwal</span>
+              <CustomSelect value={editTab} ariaLabel="Jenis jadwal" placeholder="Pilih jenis"
+                options={[{ value: 'rutin', label: 'Pengajian Rutin' }, { value: 'khusus', label: 'Pengajian Khusus' }]}
+                onChange={setEditTab} />
+            </div>
+            <div className="field"><span>Bulan</span>
+              <MonthPicker y={editYm.y} m={editYm.m} onChange={setEditYm} ariaLabel="Bulan daftar edit" />
+            </div>
           </div>
-          <div className="banner warn"><span>Peringatan: jika tanggal bertepatan dengan jadwal pengajian umum, Anda dapat memilih jadwal umum tersebut sebagai libur. Tidak otomatis.</span></div>
+          {editLoading && <p className="hint">Memuat daftar jadwal...</p>}
+          {!editLoading && editTab === 'rutin' && (
+            <div className="master-rows">
+              {editRutin.length === 0 && <p className="hint">Tidak ada jadwal rutin pada bulan ini.</p>}
+              {editRutin.map((o) => (
+                <div className="master-row" key={o.id}>
+                  <span>{formatID(o.occurrence_date)} • {String(o.occurrence_time).slice(0, 5)}{o.holiday ? ' • Libur' : o.submitted ? ' • Sudah diisi' : ' • Belum diisi'}</span>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ minHeight: 38 }}
+                    disabled={o.holiday}
+                    onClick={() => {
+                      setSelectedKey(o.id);
+                      setEditOcc(o);
+                      setEditing(true);
+                      setShowEditPicker(false);
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                  >
+                    Edit
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {!editLoading && editTab === 'khusus' && (
+            <div className="master-rows">
+              {editSpecials.length === 0 && <p className="hint">Tidak ada pengajian khusus pada bulan ini.</p>}
+              {editSpecials.map((e) => (
+                <div className="master-row" key={e.id}>
+                  <span>{e.event_type_snapshot || 'Pengajian Khusus'} • {formatID(e.event_date)}{e.submitted ? ' • Sudah diisi' : ''}</span>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ minHeight: 38 }}
+                    onClick={() => { setShowEditPicker(false); setParams({ special: e.id }); }}
+                  >
+                    Buka
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </Modal>
       )}
       {showConflicts && (
@@ -1154,7 +1261,7 @@ export default function Absensi() {
           {(myConflicts.length ? myConflicts : conflicts).map((op) => (
             <div className="conflict-row" key={op.id}>
               <div>
-                <strong>{op.payload?.occurrence?.occurrence_date ? formatID(op.payload.occurrence.occurrence_date) : 'Jadwal'}</strong>
+                <strong>{op.payload?.label || (op.payload?.occurrence?.occurrence_date ? formatID(op.payload.occurrence.occurrence_date) : 'Jadwal')}</strong>
                 <p className="hint">Server sudah memiliki data yang berbeda, dibuat setelah perubahan lokal.</p>
               </div>
               <div className="conflict-actions">

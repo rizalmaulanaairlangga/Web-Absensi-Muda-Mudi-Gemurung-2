@@ -101,6 +101,138 @@ function rowsDiffer(localRows, serverRows) {
   return false;
 }
 
+async function pgUpsert(config, token, table, onConflict, body, select) {
+  const res = await sbFetch(config, token, '/rest/v1/' + table + '?onConflict=' + onConflict + (select ? '&select=*' : ''), {
+    method: 'POST',
+    headers: { Prefer: 'return=' + (select ? 'representation' : 'minimal') + ',resolution=merge-duplicates' },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) return { auth: true };
+  if (!res.ok) throw new Error(table + ':' + res.status);
+  if (select) {
+    const rows = await res.json();
+    return { rows };
+  }
+  return {};
+}
+
+async function replaySpecialEvent(config, token, op) {
+  const payload = op.payload || {};
+  const ev = payload.event || {};
+  const r1 = await pgUpsert(config, token, 'special_events', 'id', {
+    id: ev.id,
+    account_id: op.account_id,
+    event_type_id: ev.event_type_id || null,
+    event_type_snapshot: ev.event_type_snapshot || null,
+    event_date: ev.event_date,
+    day_name: ev.day_name || null,
+    event_time: ev.event_time,
+    end_time: ev.end_time || null,
+    linked_holiday_occurrence_id: null,
+  }, true);
+  if (r1.auth) return r1;
+  const saved = r1.rows[0];
+  const rep = payload.replacement;
+  if (rep && rep.recurring_schedule_id && rep.occurrence_date) {
+    const r2 = await pgUpsert(config, token, 'schedule_occurrences', 'account_id,recurring_schedule_id,occurrence_date', {
+      account_id: op.account_id,
+      recurring_schedule_id: rep.recurring_schedule_id,
+      occurrence_date: rep.occurrence_date,
+      occurrence_time: rep.occurrence_time,
+      occurrence_end_time: rep.occurrence_end_time || null,
+      day_name: rep.day_name || null,
+    }, true);
+    if (r2.auth) return r2;
+    const dbOcc = r2.rows[0];
+    const r3 = await sbFetch(config, token, '/rest/v1/schedule_occurrences?id=eq.' + dbOcc.id, {
+      method: 'PATCH',
+      body: JSON.stringify({ is_holiday: true }),
+    });
+    if (r3.status === 401) return { auth: true };
+    if (!r3.ok) throw new Error('holiday-flag:' + r3.status);
+    const r4 = await pgUpsert(config, token, 'holidays', 'occurrence_id', {
+      account_id: op.account_id,
+      occurrence_id: dbOcc.id,
+      holiday_date: rep.occurrence_date,
+      day_name: rep.day_name || null,
+      reason: rep.reason || 'Digantikan pengajian khusus',
+    }, false);
+    if (r4.auth) return r4;
+    const r5 = await sbFetch(config, token, '/rest/v1/holidays?occurrence_id=eq.' + dbOcc.id + '&select=id', { method: 'GET' });
+    if (r5.status === 401) return { auth: true };
+    const check = await r5.json();
+    if (!check || !check.length) throw new Error('Holiday belum tercatat.');
+    const r6 = await sbFetch(config, token, '/rest/v1/special_events?id=eq.' + saved.id, {
+      method: 'PATCH',
+      body: JSON.stringify({ linked_holiday_occurrence_id: dbOcc.id }),
+    });
+    if (r6.status === 401) return { auth: true };
+    if (!r6.ok) throw new Error('link:' + r6.status);
+  }
+  try {
+    await sbFetch(config, token, '/rest/v1/audit_logs', {
+      method: 'POST',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ account_id: op.account_id, action: 'SYNC_SPECIAL_EVENT_BG', entity_type: 'special_event', entity_id: saved.id, new_data: { opId: op.id } }),
+    });
+  } catch (e) { /* audit best-effort */ }
+  return { ok: true };
+}
+
+async function replaySpecialAttendance(config, token, op) {
+  const payload = op.payload || {};
+  const ev = payload.event || {};
+  let eventId = ev.id;
+  let chk = await sbFetch(config, token, '/rest/v1/special_events?id=eq.' + ev.id + '&select=id', { method: 'GET' });
+  if (chk.status === 401) return { auth: true };
+  if (!chk.ok) throw new Error('event-read:' + chk.status);
+  const found = await chk.json();
+  if (!found || !found.length) {
+    const r = await pgUpsert(config, token, 'special_events', 'id', {
+      id: ev.id,
+      account_id: op.account_id,
+      event_type_id: ev.event_type_id || null,
+      event_type_snapshot: ev.event_type_snapshot || null,
+      event_date: ev.event_date,
+      day_name: ev.day_name || null,
+      event_time: ev.event_time,
+      end_time: ev.end_time || null,
+    }, true);
+    if (r.auth) return r;
+    eventId = r.rows[0].id;
+  }
+  const srv = await sbFetch(config, token, '/rest/v1/special_attendance?special_event_id=eq.' + eventId + '&select=member_id,status,absence_name_snapshot,created_at', { method: 'GET' });
+  if (srv.status === 401) return { auth: true };
+  if (!srv.ok) throw new Error('read:' + srv.status);
+  const serverRows = await srv.json();
+  if ((serverRows || []).length > 0) {
+    const serverMax = Math.max.apply(null, serverRows.map((r) => new Date(r.created_at || 0).getTime()));
+    if (serverMax > (op.created_at || 0) && rowsDiffer(payload.rows, serverRows)) {
+      return { conflict: true, serverRows, dbId: eventId };
+    }
+  }
+  const attBody = (payload.rows || []).map((r) => ({
+    account_id: op.account_id,
+    special_event_id: eventId,
+    member_id: r.member_id,
+    status: r.status,
+    absence_name_snapshot: r.absence || null,
+    member_name_snapshot: r.member_name,
+  }));
+  if (attBody.length) {
+    const r = await pgUpsert(config, token, 'special_attendance', 'account_id,special_event_id,member_id', attBody, false);
+    if (r.auth) return r;
+  }
+  try {
+    await sbFetch(config, token, '/rest/v1/audit_logs', {
+      method: 'POST',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ account_id: op.account_id, action: 'SYNC_SPECIAL_ATTENDANCE_BG', entity_type: 'special_attendance', entity_id: eventId, new_data: { count: attBody.length, opId: op.id } }),
+    });
+  } catch (e) { /* audit best-effort */ }
+  return { ok: true };
+}
+
 async function replayAttendance(config, token, op) {
   const payload = op.payload || {};
   const occ = payload.occurrence || {};
@@ -199,23 +331,29 @@ async function runBackgroundSync() {
   if (!config || !config.url || !config.anon) return;
   if (!session || !session.access_token) return;
   if (!Array.isArray(queue) || !queue.length) return;
-  const actionable = queue.filter((o) => o && o.operation_type === 'SAVE_ATTENDANCE' && (o.status === 'pending' || o.status === 'failed'));
+  const actionable = queue.filter((o) => o && ['SAVE_ATTENDANCE', 'SAVE_SPECIAL_EVENT', 'SAVE_SPECIAL_ATTENDANCE'].includes(o.operation_type || 'SAVE_ATTENDANCE') && (o.status === 'pending' || o.status === 'failed'));
   if (!actionable.length) return;
   let token = session.access_token;
   const touch = async (id, patch) => {
     const next = (await idbGetKey('sync-queue', [])).map((o) => (o.id === id ? { ...o, ...patch, updated_at: Date.now() } : o));
     await idbSetKey('sync-queue', next);
   };
+  const runOp = async (op) => {
+    if (!op.operation_type || op.operation_type === 'SAVE_ATTENDANCE') return replayAttendance(config, token, op);
+    if (op.operation_type === 'SAVE_SPECIAL_EVENT') return replaySpecialEvent(config, token, op);
+    if (op.operation_type === 'SAVE_SPECIAL_ATTENDANCE') return replaySpecialAttendance(config, token, op);
+    throw new Error('Jenis operasi tidak dikenal.');
+  };
   for (const op of actionable) {
     await touch(op.id, { status: 'syncing', last_error: null });
     try {
-      let r = await replayAttendance(config, token, op);
+      let r = await runOp(op);
       if (r && r.auth) {
         const refreshed = session.refresh_token ? await refreshAccessToken(config, session) : null;
         if (!refreshed) throw new Error('auth');
         session = refreshed;
         token = refreshed.access_token;
-        r = await replayAttendance(config, token, op);
+        r = await runOp(op);
         if (r && r.auth) throw new Error('auth');
       }
       if (r && r.conflict) {

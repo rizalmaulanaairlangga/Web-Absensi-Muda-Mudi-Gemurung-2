@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../lib/store.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { idbGet, idbSet } from '../lib/idb.js';
 import { DEFAULT_ABSENCE, DEFAULT_STATUS, DEFAULT_HADITH, DEFAULT_FREE, DEFAULT_SPEAKERS, DEFAULT_SPECIAL_TYPES, MEMBER_CATEGORIES } from '../lib/seed.js';
 import { Modal, Empty, PlusIcon, TrashIcon, PencilIcon, ClockIcon, CustomSelect, UsersIcon, BookOpenIcon, LayersIcon, ArrowLeftIcon } from '../components/ui.jsx';
-import { formatDateShortID } from '../lib/dates.js';
+import { formatDateShortID, formatID } from '../lib/dates.js';
+import { DateField, TimeField } from '../components/fields.jsx';
 
 const DAYS = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
 
@@ -71,6 +73,7 @@ function Crud({ title, desc, items, onAdd, onEdit, onDelete, placeholder }) {
 
 export default function Admin() {
   const { account, isGuest, supabaseReady, toast } = useApp();
+  const navigate = useNavigate();
   const [view, setView] = useState('menu');
   const [members, setMembers] = useState([]);
   const [schedules, setSchedules] = useState([]);
@@ -85,6 +88,8 @@ export default function Admin() {
   const [free, setFree] = useMaster(account, 'free', DEFAULT_FREE, 'free_activity_types');
   const [speakers, setSpeakers] = useMaster(account, 'speaker', DEFAULT_SPEAKERS, 'speakers');
   const [specials, setSpecials] = useMaster(account, 'special', DEFAULT_SPECIAL_TYPES, 'special_event_types');
+  const [specEvents, setSpecEvents] = useState([]);
+  const [specLoading, setSpecLoading] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -106,6 +111,26 @@ export default function Admin() {
       if (st.data) setLockHours(st.data.lock_duration_hours);
     })();
   }, [account?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    (async () => {
+      if (view !== 'pengajian' || !account || isGuest || !supabaseReady) return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      setSpecLoading(true);
+      try {
+        const { data: evs } = await supabase.from('special_events').select('*').eq('account_id', account.id).order('event_date', { ascending: false }).limit(50);
+        const list = evs || [];
+        const ids = list.map((e) => e.id);
+        let filled = new Set();
+        if (ids.length) {
+          const { data: att } = await supabase.from('special_attendance').select('special_event_id').in('special_event_id', ids);
+          filled = new Set((att || []).map((a) => a.special_event_id));
+        }
+        setSpecEvents(list.map((e) => ({ ...e, submitted: filled.has(e.id) })));
+      } catch { /* abaikan */ }
+      setSpecLoading(false);
+    })();
+  }, [view, account?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function persistLocal(patch) {
     const local = (await idbGet('guest-data', null)) || {};
@@ -226,7 +251,7 @@ export default function Admin() {
               options={[{ value: '', label: 'Belum ditentukan' }, ...statuses.map((s) => ({ value: s.name, label: s.name }))]}
               onChange={(v) => setMemberForm({ ...memberForm, status: v })} />
           </label>
-          <label className="field"><span>Tanggal lahir</span><input className="input" type="date" value={memberForm.birth_date} onChange={(e) => setMemberForm({ ...memberForm, birth_date: e.target.value })} /></label>
+          <label className="field"><span>Tanggal lahir</span><DateField value={memberForm.birth_date} onChange={(v) => setMemberForm({ ...memberForm, birth_date: v })} ariaLabel="Tanggal lahir anggota" placeholder="Pilih tanggal lahir" /></label>
         </div>
         <label className="field"><span>Status aktif</span>
           <CustomSelect value={memberForm.active ? '1' : '0'} ariaLabel="Status aktif" placeholder="Pilih"
@@ -322,6 +347,31 @@ export default function Admin() {
               onEdit={(id, n) => editMaster('special_event_types', setSpecials, id, n)}
               onDelete={(it) => delMaster('special_event_types', setSpecials, it, 'Hapus jenis khusus')} />
           </div>
+          <div className="admin-sub" style={{ marginTop: 12 }}>
+            <div className="admin-sub-head">
+              <div><h3 className="card-title" style={{ fontSize: 15 }}>Daftar Pengajian Khusus</h3><p className="card-desc" style={{ marginBottom: 0 }}>Buka detail untuk melihat atau mengisi absensi.</p></div>
+              <button className="btn btn-primary" style={{ minHeight: 40, padding: '8px 12px', fontSize: 13 }} onClick={() => navigate('/?newSpecial=1')}><PlusIcon /> Buat</button>
+            </div>
+            {specLoading && <p className="hint">Memuat daftar...</p>}
+            {!specLoading && specEvents.length === 0 && <p className="hint">Belum ada pengajian khusus. Buat yang pertama lewat tombol di atas.</p>}
+            {specEvents.length > 0 && (
+              <div className="master-rows">
+                {specEvents.map((e) => (
+                  <div className="master-row" key={e.id} style={{ alignItems: 'flex-start' }}>
+                    <div>
+                      <div><strong>{e.event_type_snapshot || 'Pengajian Khusus'}</strong></div>
+                      <div className="hint">{e.event_date ? formatID(e.event_date) : ''} • {timeRange(e.event_time, e.end_time)}</div>
+                      <div className="hint">{e.linked_holiday_occurrence_id ? 'Menggantikan jadwal rutin (libur)' : 'Tidak menggantikan jadwal rutin'} • {e.submitted ? 'Absensi sudah diisi' : 'Absensi tersedia'}</div>
+                    </div>
+                    <span className="master-actions">
+                      <button className="btn" style={{ minHeight: 38 }} onClick={() => navigate(`/?special=${e.id}`)}>Lihat</button>
+                      <button className="btn btn-primary" style={{ minHeight: 38 }} onClick={() => navigate(`/?special=${e.id}`)}>Isi Absensi</button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </section>
       </div>
     );
@@ -410,8 +460,8 @@ function AddSchedule({ onAdd }) {
             options={DAYS.map((d, i) => ({ value: i, label: d }))}
             onChange={(v) => setDow(Number(v))} />
         </div>
-        <label className="field"><span>Jam mulai</span><input className="input" type="time" value={start} onChange={(e) => setStart(e.target.value)} /></label>
-        <label className="field"><span>Jam selesai</span><input className="input" type="time" value={end} onChange={(e) => setEnd(e.target.value)} /></label>
+        <div className="field"><span>Jam mulai</span><TimeField value={start} onChange={setStart} ariaLabel="Jam mulai jadwal" /></div>
+        <div className="field"><span>Jam selesai</span><TimeField value={end} onChange={setEnd} ariaLabel="Jam selesai jadwal" /></div>
       </div>
       <button className="btn btn-primary btn-block" onClick={() => onAdd(dow, start, end)}><PlusIcon /> Tambah Jadwal</button>
     </div>
