@@ -62,8 +62,11 @@ export function AppProvider({ children }) {
   }
 
   useEffect(() => {
+    let subscription = null;
+    let cancelled = false;
     (async () => {
       const guest = localStorage.getItem('gm-guest');
+      let hasGuest = false;
       if (guest) {
         try {
           const g = JSON.parse(guest);
@@ -71,30 +74,40 @@ export function AppProvider({ children }) {
             localStorage.removeItem('gm-guest');
             await idbDel('guest-data');
           } else {
-            setIsGuest(true);
-            setAccount({ id: g.accountId, type: 'GUEST' });
-            setLoadingAuth(false);
-            return;
+            hasGuest = true;
+            if (!cancelled) {
+              setIsGuest(true);
+              setAccount({ id: g.accountId, type: 'GUEST' });
+            }
           }
         } catch { localStorage.removeItem('gm-guest'); }
       }
-      if (!isSupabaseConfigured) { setLoadingAuth(false); return; }
-      const { data } = await supabase.auth.getSession();
-      const sess = data.session;
-      setSession(sess);
-      if (sess?.user) {
-        try { const acc = await ensureAccount(sess.user.id); setAccount(acc); }
-        catch (e) { toast('Gagal memuat akun. Coba muat ulang.'); }
+      if (isSupabaseConfigured) {
+        try {
+          const { data } = await supabase.auth.getSession();
+          const sess = data.session;
+          if (!cancelled) {
+            setSession(sess);
+            if (sess?.user && !hasGuest) {
+              try { const acc = await ensureAccount(sess.user.id); if (!cancelled) setAccount(acc); }
+              catch { toast('Gagal memuat akun. Coba muat ulang.'); }
+            }
+          }
+        } catch { /* abaikan, lanjut sebagai tamu/anonim */ }
+        const { data: sub } = supabase.auth.onAuthStateChange(async (_ev, s) => {
+          setSession(s);
+          if (s?.user) {
+            try { const acc = await ensureAccount(s.user.id); setAccount(acc); setIsGuest(false); }
+            catch { /* abaikan */ }
+          } else if (!localStorage.getItem('gm-guest')) {
+            setAccount(null);
+          }
+        });
+        subscription = sub?.subscription || sub || null;
       }
-      setLoadingAuth(false);
-      supabase.auth.onAuthStateChange(async (_ev, s) => {
-        setSession(s);
-        if (s?.user) {
-          try { const acc = await ensureAccount(s.user.id); setAccount(acc); setIsGuest(false); }
-          catch { /* abaikan */ }
-        } else { setAccount(null); }
-      });
+      if (!cancelled) setLoadingAuth(false);
     })();
+    return () => { cancelled = true; try { subscription?.unsubscribe?.(); } catch { /* abaikan */ } };
   }, []);
 
   useEffect(() => { idbGet('sync-queue', []).then(setQueue); }, []);
