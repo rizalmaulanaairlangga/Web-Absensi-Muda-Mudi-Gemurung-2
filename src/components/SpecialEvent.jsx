@@ -2,7 +2,7 @@ import React from 'react';
 import { useApp } from '../lib/store.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { withTimeout, isNetworkError } from '../lib/net.js';
-import { Modal, CustomSelect, PlusIcon } from './ui.jsx';
+import { Modal, CustomSelect, PlusIcon, Empty } from './ui.jsx';
 import { DateField, TimeField, formatLongID } from './fields.jsx';
 import MemberRow from './MemberRow.jsx';
 import { dayName, dayOfWeek, formatID, toISODate, todayJakarta } from '../lib/dates.js';
@@ -248,8 +248,10 @@ export function SpecialEventModal({ schedules = [], onClose, onCreated }) {
   );
 }
 
-export function SpecialDetail({ event, members, absenceTypes, onBack, onChanged }) {
+export function SpecialDetail({ eventId, localEvent, members, absenceTypes, onBack, onChanged }) {
   const { account, online, toast, enqueue, supabaseReady, saveSnapshot, loadSnapshot } = useApp();
+  const [event, setEvent] = React.useState(localEvent || null);
+  const [eventMissing, setEventMissing] = React.useState(false);
   const [answers, setAnswers] = React.useState({});
   const [rows, setRows] = React.useState(null);
   const [editing, setEditing] = React.useState(true);
@@ -259,6 +261,43 @@ export function SpecialDetail({ event, members, absenceTypes, onBack, onChanged 
     if (!event) return [];
     return (members || []).filter((m) => m.active && (!m.joined_at || m.joined_at <= event.event_date));
   }, [members, event]);
+
+  React.useEffect(() => {
+    setEvent(localEvent || null);
+    setEventMissing(false);
+    setRows(null);
+    setAnswers({});
+    setEditing(true);
+  }, [eventId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  React.useEffect(() => {
+    (async () => {
+      if (!eventId) return;
+      if (online && supabaseReady) {
+        try {
+          const { data } = await withTimeout(supabase.from('special_events').select('*').eq('id', eventId).maybeSingle(), 15000);
+          if (data) {
+            setEvent(data);
+            setEventMissing(false);
+            return;
+          }
+        } catch { /* fallback lokal */ }
+      }
+      if (localEvent && localEvent.id === eventId) {
+        setEvent(localEvent);
+        return;
+      }
+      try {
+        const snap = await loadSnapshot(account.id);
+        const found = (snap?.specials || []).find((e) => e.id === eventId);
+        if (found) setEvent(found);
+        else setEventMissing(true);
+      } catch {
+        setEventMissing(true);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId, online]);
 
   React.useEffect(() => {
     (async () => {
@@ -350,7 +389,18 @@ export function SpecialDetail({ event, members, absenceTypes, onBack, onChanged 
     setSaving(false);
   }
 
-  if (!event) return null;
+  if (!event) {
+    return (
+      <div className="card">
+        <button className="btn" style={{ marginBottom: 12 }} onClick={onBack}><span aria-hidden="true">←</span> Kembali</button>
+        {eventMissing ? (
+          <Empty title="Data belum tersedia" desc="Detail pengajian khusus belum tersimpan di perangkat. Hubungkan internet untuk memuatnya." />
+        ) : (
+          <p className="hint">Memuat detail pengajian khusus...</p>
+        )}
+      </div>
+    );
+  }
   const males = eligible.filter((m) => m.gender === 'MALE');  const females = eligible.filter((m) => m.gender === 'FEMALE');
 
   return (
