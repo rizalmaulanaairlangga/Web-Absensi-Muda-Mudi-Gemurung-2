@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useApp, clientId } from '../lib/store.jsx';
+import { useApp, clientId, withTimeout } from '../lib/store.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { idbGet, idbSet } from '../lib/idb.js';
 import { todayJakarta, toISODate, formatID, dayName, dayOfWeek, isWithinWindow, windowOpenAt, canEdit, monthLabel } from '../lib/dates.js';
@@ -139,6 +139,7 @@ export default function Absensi() {
   const [tableVisible, setTableVisible] = useState(false);
   const [tableData, setTableData] = useState(null);
   const [tableLoading, setTableLoading] = useState(false);
+  const [tableError, setTableError] = useState('');
   const [showConflicts, setShowConflicts] = useState(false);
   const [mat, setMat] = useState({ ...MAT_OFF, surah: '', ayat: '', pemateriQ: '', hadithId: '', halaman: '', pemateriH: '', nasehatBy: '', freeId: '', freeBy: '' });
   const [collapsedSecs, setCollapsedSecs] = useState({ quran: false, hadith: false, nasehat: false, free: false });
@@ -215,15 +216,44 @@ export default function Absensi() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account?.id]);
 
+  function applySnapshot(snap, mcached) {
+    if (!snap?.members?.length) return false;
+    const cands = formCandidates(snap.schedules || []);
+    const byKey = new Map((snap.occurrences || []).map((o) => [o.localKey || `${o.recurring_schedule_id}|${o.occurrence_date}`, o]));
+    const formList = cands.map((c) => byKey.get(c.key) || { id: `virt-${c.key}`, ...c, virtual: true });
+    setStore({
+      accountId: account.id,
+      members: snap.members, absenceTypes: snap.absenceTypes || [], schedules: snap.schedules || [],
+      lockHours: snap.lockHours ?? 24, occurrences: [], attendance: snap.attendance || {}, holidays: snap.holidays || {},
+      speakers: mcached?.speakers?.length ? mcached.speakers : (snap.speakers || []),
+      hadith: mcached?.hadith?.length ? mcached.hadith : (snap.hadith || []),
+      free: mcached?.free?.length ? mcached.free : (snap.free || []),
+      specialTypes: mcached?.specialTypes?.length ? mcached.specialTypes : (snap.specialTypes || []),
+      offline: typeof navigator !== 'undefined' && navigator.onLine === false,
+    });
+    setFormOccs(formList);
+    if (!selectedKey && formList.length) {
+      const today = toISODate(todayJakarta());
+      const up = formList.find((o) => o.occurrence_date >= today) || formList[formList.length - 1];
+      setSelectedKey(up.id);
+    }
+    return true;
+  }
+
   async function loadFormData() {
     const aid = account.id;
+    let hydrated = false;
     try {
-      const [mem, abs, sch, sett] = await Promise.all([
+      const [snap, mcached] = await Promise.all([loadSnapshot(aid), loadMastersCache(aid)]);
+      hydrated = applySnapshot(snap, mcached);
+    } catch { /* lanjut ke network */ }
+    try {
+      const [mem, abs, sch, sett] = await withTimeout(Promise.all([
         supabase.from('members').select('*').eq('account_id', aid).order('nickname'),
         supabase.from('absence_types').select('*').eq('account_id', aid),
         supabase.from('recurring_schedules').select('*').eq('account_id', aid).eq('active', true),
         supabase.from('app_settings').select('*').eq('account_id', aid).maybeSingle(),
-      ]);
+      ]), 20000);
       let schedules = (sch.data || []).map((s) => ({
         id: s.id,
         day_of_week: s.day_of_week,
@@ -269,7 +299,7 @@ export default function Absensi() {
       }
       const cands = formCandidates(schedules);
       const months = [...new Set(cands.map((c) => c.occurrence_date.slice(0, 7)))];
-      await Promise.all(months.map(async (ymStr) => {
+      await withTimeout(Promise.all(months.map(async (ymStr) => {
         const [yy, mm] = ymStr.split('-').map(Number);
         const virt = occurrencesForMonth(schedules, yy, mm);
         await Promise.all(virt.map((o) => supabase.from('schedule_occurrences').upsert({
@@ -280,10 +310,10 @@ export default function Absensi() {
           occurrence_end_time: o.occurrence_end_time,
           day_name: o.day_name,
         }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date', ignoreDuplicates: true })));
-      }));
+      })), 30000);
       const minDate = cands.length ? cands[0].occurrence_date : toISODate(todayJakarta());
       const maxDate = cands.length ? cands[cands.length - 1].occurrence_date : toISODate(todayJakarta());
-      const occDb = await supabase.from('schedule_occurrences').select('*').eq('account_id', aid).gte('occurrence_date', minDate).lte('occurrence_date', maxDate).order('occurrence_date');
+      const occDb = await withTimeout(supabase.from('schedule_occurrences').select('*').eq('account_id', aid).gte('occurrence_date', minDate).lte('occurrence_date', maxDate).order('occurrence_date'), 20000);
       const dbRows = (occDb.data || []).map((o) => ({
         id: o.id,
         localKey: `${o.recurring_schedule_id}|${o.occurrence_date}`,
@@ -300,9 +330,11 @@ export default function Absensi() {
       let attMap = {};
       let holMap = {};
       if (dbIds.length > 0) {
-        const attDb = await supabase.from('attendance').select('*').in('occurrence_id', dbIds);
+        const [attDb, holDb] = await withTimeout(Promise.all([
+          supabase.from('attendance').select('*').in('occurrence_id', dbIds),
+          supabase.from('holidays').select('*').gte('holiday_date', minDate).lte('holiday_date', maxDate),
+        ]), 20000);
         (attDb.data || []).forEach((a) => { (attMap[a.occurrence_id] ||= []).push(a); });
-        const holDb = await supabase.from('holidays').select('*').gte('holiday_date', minDate).lte('holiday_date', maxDate);
         holMap = Object.fromEntries((holDb.data || []).filter((h) => h.account_id === aid).map((h) => [h.occurrence_id, h]));
       }
       if (!absenceTypes.length) absenceTypes = DEFAULT_ABSENCE.map((n) => ({ name: n }));
@@ -335,28 +367,15 @@ export default function Absensi() {
       });
     } catch (e) {
       const netErr = !navigator.onLine || /failed to fetch|network|timeout/i.test(String(e?.message || e || ''));
+      if (hydrated) {
+        toast(netErr
+          ? 'Anda sedang offline. Menampilkan data terakhir yang tersimpan di perangkat.'
+          : 'Gagal memperbarui data. Menampilkan data tersimpan.');
+        return;
+      }
       if (netErr) {
         const [snap, mcached] = await Promise.all([loadSnapshot(account.id), loadMastersCache(account.id)]);
-        if (snap && snap.members) {
-          const cands = formCandidates(snap.schedules || []);
-          const byKey = new Map((snap.occurrences || []).map((o) => [o.localKey || `${o.recurring_schedule_id}|${o.occurrence_date}`, o]));
-          const formList = cands.map((c) => byKey.get(c.key) || { id: `virt-${c.key}`, ...c, virtual: true });
-          setStore({
-            accountId: account.id,
-            members: snap.members, absenceTypes: snap.absenceTypes || [], schedules: snap.schedules || [],
-            lockHours: snap.lockHours ?? 24, occurrences: [], attendance: snap.attendance || {}, holidays: snap.holidays || {},
-            speakers: mcached.speakers?.length ? mcached.speakers : (snap.speakers || []),
-            hadith: mcached.hadith?.length ? mcached.hadith : (snap.hadith || []),
-            free: mcached.free?.length ? mcached.free : (snap.free || []),
-            specialTypes: mcached.specialTypes?.length ? mcached.specialTypes : (snap.specialTypes || []),
-            offline: true,
-          });
-          setFormOccs(formList);
-          if (!selectedKey && formList.length) {
-            const today = toISODate(todayJakarta());
-            const up = formList.find((o) => o.occurrence_date >= today) || formList[formList.length - 1];
-            setSelectedKey(up.id);
-          }
+        if (applySnapshot(snap, mcached)) {
           toast('Anda sedang offline. Menampilkan data terakhir yang tersimpan di perangkat.');
           return;
         }
@@ -380,19 +399,22 @@ export default function Absensi() {
       setTableData({ occurrences: occ, attendance: local?.attendance || store.attendance || {}, holidays: local?.holidays || {} });
       return;
     }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      toast('Anda sedang offline. Tabel membutuhkan koneksi untuk memuat bulan lain.');
+      return;
+    }
     setTableLoading(true);
+    setTableError('');
     try {
       const aid = account.id;
       const virt = occurrencesForMonth(store.schedules, ym.y, ym.m);
-      for (const o of virt) {
-        await supabase.from('schedule_occurrences').upsert({
-          account_id: aid, recurring_schedule_id: o.recurring_schedule_id, occurrence_date: o.occurrence_date,
-          occurrence_time: o.occurrence_time, occurrence_end_time: o.occurrence_end_time, day_name: o.day_name,
-        }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date', ignoreDuplicates: true });
-      }
+      await withTimeout(Promise.all(virt.map((o) => supabase.from('schedule_occurrences').upsert({
+        account_id: aid, recurring_schedule_id: o.recurring_schedule_id, occurrence_date: o.occurrence_date,
+        occurrence_time: o.occurrence_time, occurrence_end_time: o.occurrence_end_time, day_name: o.day_name,
+      }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date', ignoreDuplicates: true }))), 25000);
       const first = `${ym.y}-${String(ym.m).padStart(2, '0')}-01`;
       const last = `${ym.y}-${String(ym.m).padStart(2, '0')}-31`;
-      const occDb = await supabase.from('schedule_occurrences').select('*').eq('account_id', aid).gte('occurrence_date', first).lte('occurrence_date', last).order('occurrence_date');
+      const occDb = await withTimeout(supabase.from('schedule_occurrences').select('*').eq('account_id', aid).gte('occurrence_date', first).lte('occurrence_date', last).order('occurrence_date'), 20000);
       const rows = (occDb.data || []).map((o) => ({
         id: o.id, localKey: `${o.recurring_schedule_id}|${o.occurrence_date}`,
         recurring_schedule_id: o.recurring_schedule_id, occurrence_date: o.occurrence_date,
@@ -404,13 +426,16 @@ export default function Absensi() {
       let attMap = {};
       let holMap = {};
       if (ids.length > 0) {
-        const attDb = await supabase.from('attendance').select('*').in('occurrence_id', ids);
+        const [attDb, holDb] = await withTimeout(Promise.all([
+          supabase.from('attendance').select('*').in('occurrence_id', ids),
+          supabase.from('holidays').select('*').eq('account_id', aid).gte('holiday_date', first).lte('holiday_date', last),
+        ]), 20000);
         (attDb.data || []).forEach((a) => { (attMap[a.occurrence_id] ||= []).push(a); });
-        const holDb = await supabase.from('holidays').select('*').eq('account_id', aid).gte('holiday_date', first).lte('holiday_date', last);
         holMap = Object.fromEntries((holDb.data || []).map((h) => [h.occurrence_id, h]));
       }
       setTableData({ occurrences: rows, attendance: attMap, holidays: holMap });
     } catch {
+      setTableError('Gagal memuat tabel. Periksa koneksi lalu tekan Refresh.');
       toast('Gagal memuat tabel. Periksa koneksi lalu coba lagi.');
     }
     setTableLoading(false);
@@ -475,14 +500,14 @@ export default function Absensi() {
           setAnswers(map);
         } else if (!isGuest && supabaseReady && online && occ.id && !String(occ.id).startsWith('virt-')) {
           try {
-            const attDb = await supabase.from('attendance').select('*').eq('occurrence_id', occ.id);
+            const attDb = await withTimeout(supabase.from('attendance').select('*').eq('occurrence_id', occ.id), 15000);
             if ((attDb.data || []).length > 0) {
               const map = {};
               attDb.data.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : {}; });
               setAnswers(map);
               setStore((p) => ({ ...p, attendance: { ...p.attendance, [occ.id]: attDb.data } }));
             }
-            const matDb = await supabase.from('materials').select('*').eq('occurrence_id', occ.id);
+            const matDb = await withTimeout(supabase.from('materials').select('*').eq('occurrence_id', occ.id), 15000);
             if ((matDb.data || []).length > 0) {
               const byKind = {};
               matDb.data.forEach((r) => { byKind[r.kind] = r; });
@@ -590,28 +615,32 @@ export default function Absensi() {
         toast('Tersimpan di perangkat. Akan dikirim otomatis saat koneksi kembali.');
       } else {
         try {
-          const { data: dbOcc, error: occErr } = await supabase.from('schedule_occurrences').upsert({
+          const { data: dbOcc, error: occErr } = await withTimeout(supabase.from('schedule_occurrences').upsert({
             account_id: account.id,
             recurring_schedule_id: occ.recurring_schedule_id,
             occurrence_date: occ.occurrence_date,
             occurrence_time: occ.occurrence_time,
             occurrence_end_time: occ.occurrence_end_time || null,
             day_name: occ.day_name,
-          }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date' }).select().single();
+          }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date' }).select().single(), 20000);
           if (occErr) throw occErr;
-          for (const r of rows) {
-            const { error } = await supabase.from('attendance').upsert({ account_id: account.id, occurrence_id: dbOcc.id, member_id: r.member_id, status: r.status, absence_name_snapshot: r.absence, member_name_snapshot: r.member_name }, { onConflict: 'account_id,occurrence_id,member_id' });
-            if (error) throw error;
-          }
-          for (const mm of mats) {
-            const payload = { id: mm.clientId, account_id: account.id, occurrence_id: dbOcc.id, kind: mm.kind };
+          await withTimeout((async () => {
+            for (const r of rows) {
+              const { error } = await supabase.from('attendance').upsert({ account_id: account.id, occurrence_id: dbOcc.id, member_id: r.member_id, status: r.status, absence_name_snapshot: r.absence, member_name_snapshot: r.member_name }, { onConflict: 'account_id,occurrence_id,member_id' });
+              if (error) throw error;
+            }
+          })(), 30000);
+          await withTimeout((async () => {
+            for (const mm of mats) {
+              const payload = { id: mm.clientId, account_id: account.id, occurrence_id: dbOcc.id, kind: mm.kind };
             if (mm.kind === 'QURAN') { payload.quran_surah_number = mm.surah; payload.quran_surah_name_snapshot = mm.surahName; payload.ayat_range = mm.ayat; payload.speaker_name_snapshot = mm.speaker; }
             if (mm.kind === 'HADITH') { payload.hadith_name_snapshot = mm.hadith; payload.hadith_page = mm.halaman; payload.speaker_name_snapshot = mm.speaker; }
             if (mm.kind === 'NASEHAT') { payload.speaker_name_snapshot = mm.speaker; }
             if (mm.kind === 'FREE') { payload.free_activity_name_snapshot = mm.activity; payload.speaker_name_snapshot = mm.speaker; }
             const { error } = await supabase.from('materials').upsert(payload, { onConflict: 'id' });
             if (error) throw error;
-          }
+            }
+          })(), 30000);
           try {
             await supabase.from('audit_logs').insert({ account_id: account.id, action: submitted ? 'UPDATE_ATTENDANCE' : 'CREATE_ATTENDANCE', entity_type: 'attendance', entity_id: dbOcc.id, new_data: { count: rows.length } });
           } catch { /* audit best-effort */ }
@@ -644,7 +673,9 @@ export default function Absensi() {
     return (
       <div>
         {!online && <div className="banner warn"><span>Anda sedang offline. Perubahan akan disimpan di perangkat dan dikirim saat koneksi kembali.</span></div>}
-        <div className="card"><Empty title="Belum ada data offline" desc="Hubungkan internet sekali untuk memuat anggota dan jadwal, setelah itu form dapat digunakan offline." /></div>
+        <div className="card">
+          <Empty title="Belum ada data offline" desc="Hubungkan internet sekali untuk memuat anggota dan jadwal, setelah itu form dapat digunakan offline." action={<button className="btn btn-primary" onClick={() => loadFormData()}>Coba lagi</button>} />
+        </div>
       </div>
     );
   }
@@ -1042,6 +1073,7 @@ export default function Absensi() {
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
               <button className="btn" style={{ minHeight: 40 }} disabled={tableLoading} onClick={() => loadTable()}><RefreshIcon /> {tableLoading ? 'Memuat...' : 'Refresh'}</button>
             </div>
+            {tableError && <p className="field-error" style={{ marginBottom: 10 }}>{tableError}</p>}
             {!tableData ? (
               <p className="hint">{tableLoading ? 'Memuat data absensi...' : 'Menyiapkan tabel...'}</p>
             ) : (
@@ -1075,22 +1107,27 @@ export default function Absensi() {
           if (isGuest || !supabaseReady) {
             const key = occ.id;
             setStore((p) => ({ ...p, holidays: { ...p.holidays, [key]: { reason: 'Libur' } } }));
+            setShowHoliday(false); toast('Jadwal ditandai libur.');
           } else if (!online) {
             toast('Anda sedang offline. Tandai libur akan tersedia saat koneksi kembali.');
           } else {
             const reason = window.prompt('Alasan libur:') || 'Libur';
-            const { data: dbOcc } = await supabase.from('schedule_occurrences').upsert({
-              account_id: account.id, recurring_schedule_id: occ.recurring_schedule_id, occurrence_date: occ.occurrence_date,
-              occurrence_time: occ.occurrence_time, occurrence_end_time: occ.occurrence_end_time || null, day_name: occ.day_name,
-            }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date' }).select().single();
-            if (dbOcc) {
-              await supabase.from('schedule_occurrences').update({ is_holiday: true }).eq('id', dbOcc.id);
-              await supabase.from('holidays').insert({ account_id: account.id, occurrence_id: dbOcc.id, holiday_date: occ.occurrence_date, day_name: occ.day_name, reason });
-              await loadFormData();
-              if (tableVisible) await loadTable();
+            try {
+              const { data: dbOcc } = await withTimeout(supabase.from('schedule_occurrences').upsert({
+                account_id: account.id, recurring_schedule_id: occ.recurring_schedule_id, occurrence_date: occ.occurrence_date,
+                occurrence_time: occ.occurrence_time, occurrence_end_time: occ.occurrence_end_time || null, day_name: occ.day_name,
+              }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date' }).select().single(), 20000);
+              if (dbOcc) {
+                await withTimeout(supabase.from('schedule_occurrences').update({ is_holiday: true }).eq('id', dbOcc.id), 15000);
+                await withTimeout(supabase.from('holidays').insert({ account_id: account.id, occurrence_id: dbOcc.id, holiday_date: occ.occurrence_date, day_name: occ.day_name, reason }), 15000);
+                await loadFormData();
+                if (tableVisible) await loadTable();
+              }
+              setShowHoliday(false); toast('Jadwal ditandai libur.');
+            } catch {
+              toast('Gagal menandai libur. Periksa koneksi lalu coba lagi.');
             }
           }
-          setShowHoliday(false); toast('Jadwal ditandai libur.');
         }}>Simpan</button></>}>
           <p>Jadwal <strong>{occ ? formatID(occ.occurrence_date) : ''}</strong> akan ditandai libur. Absensi tidak dapat diisi dan tidak dihitung dalam persentase.</p>
         </Modal>

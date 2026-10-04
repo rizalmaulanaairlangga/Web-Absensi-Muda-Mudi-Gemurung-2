@@ -16,6 +16,15 @@ export function clientId(prefix) {
   return `${prefix || 'id'}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+export function withTimeout(promise, ms = 20000) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), ms); });
+  return Promise.race([
+    Promise.resolve(promise).then((v) => { if (timer) clearTimeout(timer); return v; }, (e) => { if (timer) clearTimeout(timer); throw e; }),
+    timeout,
+  ]);
+}
+
 export function isNetworkError(err) {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
   const msg = String(err?.message || err || '').toLowerCase();
@@ -143,7 +152,7 @@ export function AppProvider({ children }) {
     if (!supabase || !isSupabaseConfigured) return true;
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
     try {
-      const { data, error } = await supabase.auth.getUser();
+      const { data, error } = await withTimeout(supabase.auth.getUser(), 15000);
       if (error) {
         if (isAuthInvalidError(error)) return false;
         return true;
@@ -186,11 +195,11 @@ export function AppProvider({ children }) {
           if (sess?.user && !g) {
             if (onlineRef.current) {
               try {
-                const acc = await ensureAccount(sess.user.id);
+                const acc = await withTimeout(ensureAccount(sess.user.id), 20000);
                 if (cancelled) return;
                 applyAccount(acc, sess.user.email);
               } catch (e) {
-                if (!isNetworkError(e)) toast('Gagal memuat akun. Coba muat ulang.');
+                if (!isNetworkError(e) && String(e?.message || e || '') !== 'timeout') toast('Gagal memuat akun. Coba muat ulang.');
               }
             }
             if (onlineRef.current) {
@@ -221,7 +230,7 @@ export function AppProvider({ children }) {
               return;
             }
             try {
-              const acc = await ensureAccount(s.user.id);
+              const acc = await withTimeout(ensureAccount(s.user.id), 20000);
               if (cancelled) return;
               applyAccount(acc, s.user.email);
             } catch (e) {

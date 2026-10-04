@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
-import { useApp, isNetworkError } from '../lib/store.jsx';
+import { useApp, isNetworkError, withTimeout } from '../lib/store.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 
 function loginErrorMessage(error) {
@@ -26,7 +26,7 @@ export default function Login() {
     setBusy(true);
     let error = null;
     try {
-      const res = await supabase.auth.signInWithPassword({ email, password });
+      const res = await withTimeout(supabase.auth.signInWithPassword({ email, password }), 25000);
       error = res.error;
     } catch (err) {
       error = err;
