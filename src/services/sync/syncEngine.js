@@ -21,6 +21,7 @@ export async function replayAttendanceOp(op, { force = false } = {}) {
   const accountId = op.account_id;
   const payload = op.payload || {};
   const occ = payload.occurrence || {};
+  if (!occ.recurring_schedule_id || !occ.occurrence_date) throw new Error('Data occurrence tidak lengkap.');
   const { data: dbOcc, error: occErr } = await withTimeout(supabase.from('schedule_occurrences').upsert({
     account_id: accountId,
     recurring_schedule_id: occ.recurring_schedule_id || null,
@@ -101,6 +102,7 @@ export async function replaySpecialEventOp(op) {
   const payload = op.payload || {};
   const ev = payload.event || {};
   const accountId = op.account_id;
+  if (!ev.id || !ev.event_date) throw new Error('Data event tidak lengkap.');
   const { data: saved, error: evErr } = await withTimeout(supabase.from('special_events').upsert({
     id: ev.id,
     account_id: accountId,
@@ -154,6 +156,7 @@ export async function replaySpecialAttendanceOp(op, opts = {}) {
   const payload = op.payload || {};
   const ev = payload.event || {};
   const accountId = op.account_id;
+  if (!ev.id || !ev.event_date) throw new Error('Data event tidak lengkap.');
   let eventId = ev.id;
   const { data: existing } = await withTimeout(supabase.from('special_events').select('id').eq('id', ev.id).maybeSingle(), 15000);
   if (!existing) {

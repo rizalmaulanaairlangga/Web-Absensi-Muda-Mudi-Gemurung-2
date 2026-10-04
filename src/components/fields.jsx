@@ -26,8 +26,10 @@ function useOutsideClose(open, ref, onClose) {
   React.useEffect(() => {
     if (!open) return;
     const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
   }, [open, ref, onClose]);
 }
 

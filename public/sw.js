@@ -119,6 +119,7 @@ async function pgUpsert(config, token, table, onConflict, body, select) {
 async function replaySpecialEvent(config, token, op) {
   const payload = op.payload || {};
   const ev = payload.event || {};
+  if (!ev.id || !ev.event_date) throw new Error('Data event tidak lengkap.');
   const r1 = await pgUpsert(config, token, 'special_events', 'id', {
     id: ev.id,
     account_id: op.account_id,
@@ -182,6 +183,7 @@ async function replaySpecialEvent(config, token, op) {
 async function replaySpecialAttendance(config, token, op) {
   const payload = op.payload || {};
   const ev = payload.event || {};
+  if (!ev.id || !ev.event_date) throw new Error('Data event tidak lengkap.');
   let eventId = ev.id;
   let chk = await sbFetch(config, token, '/rest/v1/special_events?id=eq.' + ev.id + '&select=id', { method: 'GET' });
   if (chk.status === 401) return { auth: true };
@@ -236,6 +238,7 @@ async function replaySpecialAttendance(config, token, op) {
 async function replayAttendance(config, token, op) {
   const payload = op.payload || {};
   const occ = payload.occurrence || {};
+  if (!occ.recurring_schedule_id || !occ.occurrence_date) throw new Error('Data occurrence tidak lengkap.');
   let res = await sbFetch(config, token, '/rest/v1/schedule_occurrences?onConflict=account_id,recurring_schedule_id,occurrence_date&select=*', {
     method: 'POST',
     headers: { Prefer: 'return=representation,resolution=merge-duplicates' },

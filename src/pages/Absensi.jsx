@@ -263,7 +263,7 @@ export default function Absensi() {
       const months = [...new Set(cands.map((c) => c.occurrence_date.slice(0, 7)))];
       await withTimeout(Promise.all(months.map(async (ymStr) => {
         const [yy, mm] = ymStr.split('-').map(Number);
-        const virt = occurrencesForMonth(schedules, yy, mm);
+        const virt = occurrencesForMonth(schedules, yy, mm).filter((o) => o.recurring_schedule_id);
         await Promise.all(virt.map((o) => supabase.from('schedule_occurrences').upsert({
           account_id: aid,
           recurring_schedule_id: o.recurring_schedule_id,
@@ -371,7 +371,7 @@ export default function Absensi() {
     setTableError('');
     try {
       const aid = account.id;
-      const virt = occurrencesForMonth(store.schedules, ym.y, ym.m);
+      const virt = occurrencesForMonth(store.schedules, ym.y, ym.m).filter((o) => o.recurring_schedule_id);
       await withTimeout(Promise.all(virt.map((o) => supabase.from('schedule_occurrences').upsert({
         account_id: aid, recurring_schedule_id: o.recurring_schedule_id, occurrence_date: o.occurrence_date,
         occurrence_time: o.occurrence_time, occurrence_end_time: o.occurrence_end_time, day_name: o.day_name,
