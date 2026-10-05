@@ -5,6 +5,7 @@ import { BottomNav, SunIcon, MoonIcon, UserIcon, LogoutIcon } from './components
 import Login from './pages/Login.jsx';
 import Absensi from './pages/Absensi.jsx';
 import Laporan from './pages/Laporan.jsx';
+import LaporanDetail from './pages/LaporanDetail.jsx';
 import Admin from './pages/Admin.jsx';
 
 function ThemeToggle() {
@@ -96,6 +97,7 @@ function Header() {
         : actionable
           ? `Online • ${pendingCount} menunggu`
           : 'Online';
+  const statusKind = !online ? 'offline' : syncing ? 'sync' : attention ? 'attention' : 'online';
   return (
     <header className="app-header">
       <div className="brand">
@@ -107,7 +109,7 @@ function Header() {
       <div className="header-right">
         <button
           type="button"
-          className="status-pill"
+          className={`status-pill is-${statusKind}`}
           role="status"
           onClick={() => { if (actionable) retrySync(); }}
           title={actionable ? `Ada ${pendingCount} perubahan menunggu. Klik untuk sinkron ulang.` : 'Status koneksi dan sinkronisasi'}
@@ -182,7 +184,12 @@ function Shell() {
             <Route path="/login" element={<Login />} />
             <Route path="/" element={<Guard><Absensi /></Guard>} />
             <Route path="/laporan" element={<Guard><Laporan /></Guard>} />
+            <Route path="/laporan/detail" element={<Guard><LaporanDetail /></Guard>} />
+            <Route path="/laporan/detail/:type/:id" element={<Guard><LaporanDetail /></Guard>} />
             <Route path="/admin" element={<Guard><Admin /></Guard>} />
+            <Route path="/admin/anggota" element={<Guard><Admin /></Guard>} />
+            <Route path="/admin/pengajian" element={<Guard><Admin /></Guard>} />
+            <Route path="/admin/materi" element={<Guard><Admin /></Guard>} />
           </Routes>
         )}
       </main>

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useApp, clientId, withTimeout } from '../lib/store.jsx';
-import { createAttendanceOp } from '../services/sync/syncQueue.js';
+import { createAttendanceOp, createHolidayOp, createCancelHolidayOp } from '../services/sync/syncQueue.js';
 import { loadMastersCache, saveMastersCache, ensureMasterLists } from '../lib/masters.js';
 import { SpecialEventModal, SpecialDetail } from '../components/SpecialEvent.jsx';
 import { supabase } from '../lib/supabaseClient.js';
@@ -126,6 +126,12 @@ export default function Absensi() {
   const [editSpecials, setEditSpecials] = useState([]);
   const [editLoading, setEditLoading] = useState(false);
   const [showHoliday, setShowHoliday] = useState(false);
+  const [holidayReason, setHolidayReason] = useState('');
+  const [holidayAck, setHolidayAck] = useState(false);
+  const [holidayBusy, setHolidayBusy] = useState(false);
+  const [holidayEdit, setHolidayEdit] = useState(null);
+  const [holidayEditBusy, setHolidayEditBusy] = useState(false);
+  const [cancelConfirm, setCancelConfirm] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [maleOpen, setMaleOpen] = useState(true);
@@ -561,6 +567,206 @@ export default function Absensi() {
     });
   }
 
+  async function persistHolidayOverlay(key, record) {
+    setStore((p) => {
+      const holidays = { ...(p.holidays || {}) };
+      if (record) holidays[key] = record;
+      else delete holidays[key];
+      const next = { ...p, holidays };
+      saveSnapshot(account.id, {
+        members: next.members, absenceTypes: next.absenceTypes, schedules: next.schedules,
+        lockHours: next.lockHours, speakers: next.speakers, hadith: next.hadith, free: next.free,
+        specialTypes: next.specialTypes, occurrences: [], attendance: next.attendance, holidays: next.holidays,
+      });
+      return next;
+    });
+  }
+
+  async function refreshAfterHoliday() {
+    if (!isGuest && supabaseReady && online) {
+      await loadFormData();
+      if (tableVisible) await loadTable();
+    }
+    if (showEditPicker) await loadEditLists();
+  }
+
+  function openHolidayCreate() {
+    setHolidayReason('');
+    setHolidayAck(false);
+    setHolidayBusy(false);
+    setShowHoliday(true);
+  }
+
+  function isNetErr(e) {
+    return (typeof navigator !== 'undefined' && navigator.onLine === false) || /failed to fetch|network|timeout/i.test(String(e?.message || e || ''));
+  }
+
+  async function submitHoliday() {
+    if (!occ || holidayBusy) return;
+    const clean = holidayReason.trim() || null;
+    const desc = occDescriptor();
+    if (submitted && !holidayAck) { setHolidayAck(true); return; }
+    setHolidayBusy(true);
+    try {
+      if (isGuest || !supabaseReady) {
+        const key = occ.id;
+        const rec = { reason: clean || 'Libur' };
+        setStore((p) => ({ ...p, holidays: { ...p.holidays, [key]: rec } }));
+        const local = await idbGet('guest-data', null);
+        if (local) await idbSet('guest-data', { ...local, holidays: { ...(local.holidays || {}), [key]: rec } });
+        toast('Jadwal ditandai libur.');
+      } else if (!online) {
+        await enqueue(createHolidayOp(account.id, desc, clean, null));
+        await persistHolidayOverlay(occKeyOf(occ), { reason: clean || 'Libur' });
+        toast('Tersimpan di perangkat. Status libur akan dikirim saat koneksi kembali.');
+      } else {
+        try {
+          const { data: dbOcc, error: occErr } = await withTimeout(supabase.from('schedule_occurrences').upsert({
+            account_id: account.id, recurring_schedule_id: occ.recurring_schedule_id, occurrence_date: occ.occurrence_date,
+            occurrence_time: occ.occurrence_time, occurrence_end_time: occ.occurrence_end_time || null, day_name: occ.day_name,
+          }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date' }).select().single(), 20000);
+          if (occErr) throw occErr;
+          if (dbOcc) {
+            await withTimeout(supabase.from('schedule_occurrences').update({ is_holiday: true }).eq('id', dbOcc.id), 15000);
+            await withTimeout(supabase.from('holidays').upsert({ account_id: account.id, occurrence_id: dbOcc.id, holiday_date: occ.occurrence_date, day_name: occ.day_name, reason: clean }, { onConflict: 'occurrence_id' }), 15000);
+          }
+          toast('Jadwal ditandai libur.');
+        } catch (e) {
+          if (isNetErr(e)) {
+            await enqueue(createHolidayOp(account.id, desc, clean, null));
+            await persistHolidayOverlay(occKeyOf(occ), { reason: clean || 'Libur' });
+            toast('Koneksi terputus. Status libur tersimpan di perangkat dan akan dikirim otomatis.');
+          } else {
+            throw e;
+          }
+        }
+        await loadFormData();
+        if (tableVisible) await loadTable();
+      }
+      setShowHoliday(false);
+    } catch {
+      toast('Gagal menandai libur. Periksa koneksi lalu coba lagi.');
+    }
+    setHolidayBusy(false);
+  }
+
+  async function openHolidayEditor(o) {
+    setCancelConfirm(false);
+    setHolidayEditBusy(false);
+    const base = { occ: o, reason: o.holidayReason || '', loadedReason: o.holidayReason ?? null, linkedSpecial: null, occurrenceId: null };
+    setHolidayEdit(base);
+    if (!isGuest && supabaseReady && online) {
+      try {
+        const aid = account.id;
+        const { data: dbOcc } = await withTimeout(supabase.from('schedule_occurrences').select('id').eq('account_id', aid).eq('recurring_schedule_id', o.recurring_schedule_id).eq('occurrence_date', o.occurrence_date).maybeSingle(), 15000);
+        if (!dbOcc) return;
+        const { data: hol } = await withTimeout(supabase.from('holidays').select('reason').eq('occurrence_id', dbOcc.id).maybeSingle(), 15000);
+        const { data: sp } = await withTimeout(supabase.from('special_events').select('id,event_type_snapshot,event_date').eq('account_id', aid).eq('linked_holiday_occurrence_id', dbOcc.id).maybeSingle(), 15000);
+        setHolidayEdit({ occ: o, reason: hol?.reason || '', loadedReason: hol ? (hol.reason ?? null) : null, linkedSpecial: sp || null, occurrenceId: dbOcc.id });
+      } catch { /* gunakan data lokal yang sudah ada */ }
+    }
+  }
+
+  async function saveHolidayReason() {
+    if (!holidayEdit || holidayEditBusy) return;
+    const clean = holidayEdit.reason.trim() || null;
+    const { occ, loadedReason, occurrenceId } = holidayEdit;
+    const desc = {
+      recurring_schedule_id: occ.recurring_schedule_id, occurrence_date: occ.occurrence_date,
+      occurrence_time: occ.occurrence_time, occurrence_end_time: occ.occurrence_end_time || null, day_name: occ.day_name,
+    };
+    setHolidayEditBusy(true);
+    try {
+      if (isGuest || !supabaseReady) {
+        const key = occKeyOf(occ);
+        const rec = { reason: clean || 'Libur' };
+        setStore((p) => ({ ...p, holidays: { ...p.holidays, [key]: rec } }));
+        const local = await idbGet('guest-data', null);
+        if (local) await idbSet('guest-data', { ...local, holidays: { ...(local.holidays || {}), [key]: rec } });
+        toast('Alasan libur diperbarui.');
+      } else if (!online) {
+        await enqueue(createHolidayOp(account.id, desc, clean, loadedReason ?? undefined));
+        await persistHolidayOverlay(occKeyOf(occ), { reason: clean || 'Libur' });
+        toast('Tersimpan di perangkat. Perubahan alasan akan dikirim saat koneksi kembali.');
+      } else {
+        try {
+          const { data: cur } = await withTimeout(supabase.from('holidays').select('reason').eq('occurrence_id', occurrenceId).maybeSingle(), 15000);
+          if (!cur) {
+            toast('Data libur sudah tidak ada di server. Memuat ulang daftar.');
+            setHolidayEdit(null);
+            await refreshAfterHoliday();
+            return;
+          }
+          if ((cur.reason ?? null) !== (loadedReason ?? null) && !window.confirm('Alasan di server sudah berubah. Timpa dengan alasan Anda?')) {
+            setHolidayEditBusy(false);
+            return;
+          }
+          const { error } = await withTimeout(supabase.from('holidays').update({ reason: clean }).eq('account_id', account.id).eq('occurrence_id', occurrenceId), 15000);
+          if (error) throw error;
+          toast('Alasan libur diperbarui.');
+        } catch (e) {
+          if (isNetErr(e)) {
+            await enqueue(createHolidayOp(account.id, desc, clean, loadedReason ?? undefined));
+            await persistHolidayOverlay(occKeyOf(occ), { reason: clean || 'Libur' });
+            toast('Koneksi terputus. Perubahan tersimpan di perangkat dan akan dikirim otomatis.');
+          } else {
+            throw e;
+          }
+        }
+      }
+      setHolidayEdit(null);
+      setCancelConfirm(false);
+      await refreshAfterHoliday();
+    } catch {
+      toast('Gagal menyimpan alasan. Periksa koneksi lalu coba lagi.');
+    }
+    setHolidayEditBusy(false);
+  }
+
+  async function cancelHoliday() {
+    if (!holidayEdit || holidayEditBusy) return;
+    const { occ, loadedReason, occurrenceId } = holidayEdit;
+    const desc = {
+      recurring_schedule_id: occ.recurring_schedule_id, occurrence_date: occ.occurrence_date,
+      occurrence_time: occ.occurrence_time, occurrence_end_time: occ.occurrence_end_time || null, day_name: occ.day_name,
+    };
+    setHolidayEditBusy(true);
+    try {
+      if (isGuest || !supabaseReady) {
+        const key = occKeyOf(occ);
+        setStore((p) => {
+          const holidays = { ...(p.holidays || {}) };
+          delete holidays[key];
+          return { ...p, holidays };
+        });
+        const local = await idbGet('guest-data', null);
+        if (local) {
+          const holidays = { ...(local.holidays || {}) };
+          delete holidays[key];
+          await idbSet('guest-data', { ...local, holidays });
+        }
+        toast('Status libur dibatalkan. Jadwal kembali dapat diisi.');
+      } else if (!online) {
+        await enqueue(createCancelHolidayOp(account.id, desc, loadedReason ?? undefined));
+        await persistHolidayOverlay(occKeyOf(occ), null);
+        toast('Tersimpan di perangkat. Pembatalan libur akan dikirim saat koneksi kembali.');
+      } else {
+        if (!occurrenceId) throw new Error('Occurrence belum tercatat di server.');
+        const { error: delErr } = await withTimeout(supabase.from('holidays').delete().eq('account_id', account.id).eq('occurrence_id', occurrenceId), 15000);
+        if (delErr) throw delErr;
+        await withTimeout(supabase.from('schedule_occurrences').update({ is_holiday: false }).eq('id', occurrenceId), 15000);
+        await withTimeout(supabase.from('special_events').update({ linked_holiday_occurrence_id: null }).eq('account_id', account.id).eq('linked_holiday_occurrence_id', occurrenceId), 15000);
+        toast('Status libur dibatalkan. Jadwal kembali dapat diisi.');
+      }
+      setHolidayEdit(null);
+      setCancelConfirm(false);
+      await refreshAfterHoliday();
+    } catch {
+      toast('Gagal membatalkan libur. Periksa koneksi lalu coba lagi.');
+    }
+    setHolidayEditBusy(false);
+  }
+
   async function onSave() {
     if (!occ) return;
     if (!windowOpen) { toast(`Absensi belum dapat diisi. Baru dapat diisi mulai pukul ${windowOpenAt(occ.occurrence_time)}, yaitu 30 menit sebelum acara dimulai.`); return; }
@@ -771,7 +977,7 @@ export default function Absensi() {
       if (isGuest || !supabaseReady) {
         const local = await idbGet('guest-data', null);
         const occ = occurrencesForMonth(local?.schedules || store?.schedules || [], editYm.y, editYm.m);
-        setEditRutin(occ.map((o) => ({ ...o, submitted: Boolean((local?.attendance || {})[o.id]?.length), holiday: Boolean((local?.holidays || {})[o.id]) })));
+        setEditRutin(occ.map((o) => ({ ...o, submitted: Boolean((local?.attendance || {})[o.id]?.length), holiday: Boolean((local?.holidays || {})[o.id]), holidayReason: (local?.holidays || {})[o.id]?.reason || '' })));
         setEditSpecials([]);
       } else if (online) {
         const aid = account.id;
@@ -788,13 +994,15 @@ export default function Absensi() {
         const ids = rows.map((o) => o.id);
         let filled = new Set();
         let holMap = {};
+        let holReason = {};
         if (ids.length) {
           const attDb = await withTimeout(supabase.from('attendance').select('occurrence_id').in('occurrence_id', ids), 20000);
           filled = new Set((attDb.data || []).map((a) => a.occurrence_id));
-          const holDb = await withTimeout(supabase.from('holidays').select('occurrence_id').eq('account_id', aid).gte('holiday_date', first).lte('holiday_date', last), 20000);
+          const holDb = await withTimeout(supabase.from('holidays').select('occurrence_id,reason').eq('account_id', aid).gte('holiday_date', first).lte('holiday_date', last), 20000);
           holMap = Object.fromEntries((holDb.data || []).map((h) => [h.occurrence_id, true]));
+          holReason = Object.fromEntries((holDb.data || []).map((h) => [h.occurrence_id, h.reason || '']));
         }
-        setEditRutin(rows.map((o) => ({ ...o, submitted: filled.has(o.id), holiday: Boolean(holMap[o.id] || o.is_holiday) })));
+        setEditRutin(rows.map((o) => ({ ...o, submitted: filled.has(o.id), holiday: Boolean(holMap[o.id] || o.is_holiday), holidayReason: holReason[o.id] || '' })));
         const specDb = await withTimeout(supabase.from('special_events').select('*').eq('account_id', aid).gte('event_date', first).lte('event_date', last).order('event_date'), 20000);
         const evs = specDb.data || [];
         const evIds = evs.map((e) => e.id);
@@ -813,7 +1021,10 @@ export default function Absensi() {
       } else {
         const snap = await loadSnapshot(account.id);
         const occ = (snap?.occurrences || []).filter((o) => (o.occurrence_date || '').startsWith(`${editYm.y}-${String(editYm.m).padStart(2, '0')}`));
-        setEditRutin(occ.map((o) => ({ ...o, submitted: Boolean((snap?.attendance || {})[o.id]?.length), holiday: Boolean((snap?.holidays || {})[o.id]) })));
+        setEditRutin(occ.map((o) => {
+          const hol = (snap?.holidays || {})[o.id] ?? (snap?.holidays || {})[o.localKey];
+          return { ...o, submitted: Boolean((snap?.attendance || {})[o.id]?.length), holiday: Boolean(hol), holidayReason: hol?.reason || '' };
+        }));
         setEditSpecials((snap?.specials || []).filter((e) => (e.event_date || '').startsWith(`${editYm.y}-${String(editYm.m).padStart(2, '0')}`)).map((e) => ({ ...e, submitted: Boolean((snap?.specialAtt || {})[e.id]?.length) })));
       }
     } catch {
@@ -855,7 +1066,7 @@ export default function Absensi() {
         </div>
 
         <div className="form-quick-actions" aria-label="Aksi cepat jadwal">
-          <button type="button" className="btn-quick btn-libur" onClick={() => setShowHoliday(true)}>
+          <button type="button" className="btn-quick btn-libur" onClick={openHolidayCreate}>
             <ClockIcon /> Tandai Libur
           </button>
           <button type="button" className="btn-quick btn-khusus" onClick={() => setParams({ newSpecial: '1' })}>
@@ -1148,7 +1359,12 @@ export default function Absensi() {
                         {tableData.occurrences.map((o) => {
                           if (tableData.holidays?.[o.id]) return <td key={o.id} className="cell-libur">LIBUR</td>;
                           const rec = (tableData.attendance?.[o.id] || []).find((a) => (a.member_id || a.memberId) === m.id);
-                          if (!rec) return <td key={o.id} className="cell-kosong">-</td>;
+                          if (!rec) {
+                            const st = scheduleStatus({ dateISO: o.occurrence_date, submitted: (tableData.attendance?.[o.id] || []).length > 0, holiday: false, todayISO: toISODate(todayJakarta()) });
+                            if (st === 'missing') return <td key={o.id} className="cell-missing" title="Jadwal lampau, absensi belum diisi">-</td>;
+                            if (st === 'future' || st === 'today') return <td key={o.id} className="cell-future">-</td>;
+                            return <td key={o.id} className="cell-kosong">-</td>;
+                          }
                           const st = rec.status;
                           return <td key={o.id} className={st === 'PRESENT' ? 'cell-hadir' : st === 'PERMITTED' ? 'cell-izin' : 'cell-alpha'}>{st === 'PRESENT' ? '✓' : st === 'PERMITTED' ? 'I' : 'A'}</td>;
                         })}
@@ -1163,34 +1379,23 @@ export default function Absensi() {
       </div>
 
       {showHoliday && (
-        <Modal title="Tandai libur" onClose={() => setShowHoliday(false)} foot={<><button className="btn" onClick={() => setShowHoliday(false)}>Batal</button><button className="btn btn-primary" onClick={async () => {
-          if (!occ) return;
-          if (isGuest || !supabaseReady) {
-            const key = occ.id;
-            setStore((p) => ({ ...p, holidays: { ...p.holidays, [key]: { reason: 'Libur' } } }));
-            setShowHoliday(false); toast('Jadwal ditandai libur.');
-          } else if (!online) {
-            toast('Anda sedang offline. Tandai libur akan tersedia saat koneksi kembali.');
-          } else {
-            const reason = window.prompt('Alasan libur:') || 'Libur';
-            try {
-              const { data: dbOcc } = await withTimeout(supabase.from('schedule_occurrences').upsert({
-                account_id: account.id, recurring_schedule_id: occ.recurring_schedule_id, occurrence_date: occ.occurrence_date,
-                occurrence_time: occ.occurrence_time, occurrence_end_time: occ.occurrence_end_time || null, day_name: occ.day_name,
-              }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date' }).select().single(), 20000);
-              if (dbOcc) {
-                await withTimeout(supabase.from('schedule_occurrences').update({ is_holiday: true }).eq('id', dbOcc.id), 15000);
-                await withTimeout(supabase.from('holidays').insert({ account_id: account.id, occurrence_id: dbOcc.id, holiday_date: occ.occurrence_date, day_name: occ.day_name, reason }), 15000);
-                await loadFormData();
-                if (tableVisible) await loadTable();
-              }
-              setShowHoliday(false); toast('Jadwal ditandai libur.');
-            } catch {
-              toast('Gagal menandai libur. Periksa koneksi lalu coba lagi.');
-            }
-          }
-        }}>Simpan</button></>}>
+        <Modal title="Tandai libur" onClose={() => setShowHoliday(false)} foot={<><button className="btn" onClick={() => setShowHoliday(false)}>Batal</button><button className="btn btn-primary" disabled={holidayBusy} onClick={submitHoliday}>{holidayBusy ? 'Menyimpan...' : 'Simpan'}</button></>}>
           <p>Jadwal <strong>{occ ? formatID(occ.occurrence_date) : ''}</strong> akan ditandai libur. Absensi tidak dapat diisi dan tidak dihitung dalam persentase.</p>
+          {submitted && !holidayAck && (
+            <div className="banner warn"><span>Jadwal ini sudah memiliki data absensi. Menandai libur tidak menghapus absensi yang sudah tersimpan.</span></div>
+          )}
+          {submitted && holidayAck && (
+            <div className="banner warn"><span>Anda mengonfirmasi bahwa jadwal berabsensi ini akan ditandai libur. Absensi yang sudah ada tetap tersimpan dan tidak dihapus.</span></div>
+          )}
+          <label className="field"><span>Alasan</span>
+            <textarea
+              className="input"
+              rows={3}
+              value={holidayReason}
+              onChange={(e) => setHolidayReason(e.target.value)}
+              placeholder="Contoh: Pengajian khusus menggantikan jadwal rutin"
+            />
+          </label>
         </Modal>
       )}
       {showCreateSpecial && (
@@ -1230,8 +1435,8 @@ export default function Absensi() {
                       type="button"
                       className="btn"
                       style={{ minHeight: 38 }}
-                      disabled={o.holiday}
                       onClick={() => {
+                        if (o.holiday) { openHolidayEditor(o); return; }
                         setSelectedKey(o.id);
                         setEditOcc(o);
                         setEditing(true);
@@ -1251,7 +1456,7 @@ export default function Absensi() {
               {editSpecials.length === 0 && <p className="hint">Tidak ada pengajian khusus pada bulan ini.</p>}
               {editSpecials.map((e) => (
                 <div className="master-row" key={e.id}>
-                  <span>{e.event_type_snapshot || 'Pengajian Khusus'} • {formatID(e.event_date)}{e.submitted ? ' • Sudah diisi' : ''}</span>
+                  <span>{e.event_type_snapshot || 'Pengajian Khusus'} • {formatID(e.event_date)} {e.submitted ? <StatusBadge kind="hadir">Sudah diisi</StatusBadge> : <StatusBadge kind="info">Belum diisi</StatusBadge>}</span>
                   <button
                     type="button"
                     className="btn"
@@ -1262,6 +1467,41 @@ export default function Absensi() {
                   </button>
                 </div>
               ))}
+            </div>
+          )}
+        </Modal>
+      )}
+      {holidayEdit && (
+        <Modal
+          title="Edit Jadwal Libur"
+          onClose={() => { setHolidayEdit(null); setCancelConfirm(false); }}
+          foot={<>
+            <button className="btn" onClick={() => { setHolidayEdit(null); setCancelConfirm(false); }}>Batal</button>
+            <button className="btn btn-danger" disabled={holidayEditBusy} onClick={() => setCancelConfirm(true)}>Batalkan Libur</button>
+            <button className="btn btn-primary" disabled={holidayEditBusy} onClick={saveHolidayReason}>{holidayEditBusy ? 'Menyimpan...' : 'Simpan Perubahan'}</button>
+          </>}
+        >
+          <p style={{ marginTop: 0 }}>Tanggal: <strong>{formatID(holidayEdit.occ.occurrence_date)}</strong> • {String(holidayEdit.occ.occurrence_time).slice(0, 5)}</p>
+          <p><StatusBadge kind="libur">Libur</StatusBadge></p>
+          <label className="field"><span>Alasan</span>
+            <textarea
+              className="input"
+              rows={3}
+              value={holidayEdit.reason}
+              onChange={(e) => setHolidayEdit((p) => (p ? { ...p, reason: e.target.value } : p))}
+              placeholder="Contoh: Pengajian khusus menggantikan jadwal rutin"
+            />
+          </label>
+          {holidayEdit.linkedSpecial && (
+            <div className="banner warn"><span>Jadwal ini masih ditandai sebagai jadwal yang digantikan oleh {holidayEdit.linkedSpecial.event_type_snapshot || 'pengajian khusus'} ({holidayEdit.linkedSpecial.event_date ? formatID(holidayEdit.linkedSpecial.event_date) : ''}). Membatalkan libur akan membuat jadwal rutin dapat diisi kembali.</span></div>
+          )}
+          {cancelConfirm && (
+            <div className="banner danger">
+              <span>Batalkan status libur? Alasan ikut terhapus dan jadwal kembali dapat diisi. Jadwal rutin induk tidak ikut terhapus.</span>
+              <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                <button className="btn" style={{ minHeight: 38 }} onClick={() => setCancelConfirm(false)}>Kembali</button>
+                <button className="btn btn-danger" style={{ minHeight: 38 }} disabled={holidayEditBusy} onClick={cancelHoliday}>{holidayEditBusy ? 'Memproses...' : 'Ya, batalkan'}</button>
+              </span>
             </div>
           )}
         </Modal>

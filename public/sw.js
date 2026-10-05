@@ -1,8 +1,9 @@
-const CACHE = 'gemurung-v4';
+const CACHE = 'gemurung-v5';
 const CORE = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
 const SYNC_TAG = 'attendance-sync';
 const IDB_NAME = 'gemurung-idb';
 const IDB_STORE = 'kv';
+const DEV_BYPASS = ['/@vite/', '/@react-refresh', '/@fs/', '/src/', '/node_modules/'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()));
@@ -14,6 +15,17 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return;
   if (e.request.method !== 'GET') return;
+  if (DEV_BYPASS.some((p) => url.pathname.startsWith(p))) return;
+  if (e.request.mode === 'navigate') {
+    e.respondWith(
+      fetch(e.request).then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE).then((c) => c.put(e.request, copy));
+        return res;
+      }).catch(() => caches.match(e.request).then((hit) => hit || caches.match('/index.html')))
+    );
+    return;
+  }
   e.respondWith(
     caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
       const copy = res.clone();

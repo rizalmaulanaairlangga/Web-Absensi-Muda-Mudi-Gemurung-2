@@ -94,6 +94,8 @@ export async function replayOp(op, opts = {}) {
   if (op.operation_type === 'SAVE_ATTENDANCE') return replayAttendanceOp(op, opts);
   if (op.operation_type === 'SAVE_SPECIAL_EVENT') return replaySpecialEventOp(op, opts);
   if (op.operation_type === 'SAVE_SPECIAL_ATTENDANCE') return replaySpecialAttendanceOp(op, opts);
+  if (op.operation_type === 'SAVE_HOLIDAY') return replaySaveHolidayOp(op, opts);
+  if (op.operation_type === 'CANCEL_HOLIDAY') return replayCancelHolidayOp(op, opts);
   throw new Error('Jenis operasi tidak dikenal.');
 }
 
@@ -210,6 +212,92 @@ export async function replaySpecialAttendanceOp(op, opts = {}) {
     });
   } catch { /* audit best-effort */ }
   return eventId;
+}
+
+export async function replaySaveHolidayOp(op, opts = {}) {
+  if (!supabase) throw new Error('Backend belum dikonfigurasi.');
+  const payload = op.payload || {};
+  const occ = payload.occurrence || {};
+  const accountId = op.account_id;
+  if (!occ.recurring_schedule_id || !occ.occurrence_date) throw new Error('Data occurrence tidak lengkap.');
+  const newReason = payload.reason ?? null;
+  const { data: dbOcc, error: occErr } = await withTimeout(supabase.from('schedule_occurrences').upsert({
+    account_id: accountId,
+    recurring_schedule_id: occ.recurring_schedule_id || null,
+    occurrence_date: occ.occurrence_date,
+    occurrence_time: occ.occurrence_time,
+    occurrence_end_time: occ.occurrence_end_time || null,
+    day_name: occ.day_name || null,
+  }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date' }).select().single(), 20000);
+  if (occErr) throw occErr;
+  await withTimeout(supabase.from('schedule_occurrences').update({ is_holiday: true }).eq('id', dbOcc.id), 15000);
+  const { data: current, error: selErr } = await withTimeout(
+    supabase.from('holidays').select('reason').eq('occurrence_id', dbOcc.id).maybeSingle(), 15000,
+  );
+  if (selErr) throw selErr;
+  if (!opts.force && current && payload.prevReason !== undefined
+    && current.reason !== payload.prevReason && current.reason !== newReason) {
+    const conflict = new Error('conflict');
+    conflict.conflict = true;
+    conflict.serverRows = [{ member_id: 'reason', status: 'HOLIDAY', absence_name_snapshot: current.reason }];
+    conflict.dbId = dbOcc.id;
+    throw conflict;
+  }
+  const { error: holErr } = await withTimeout(supabase.from('holidays').upsert({
+    account_id: accountId,
+    occurrence_id: dbOcc.id,
+    holiday_date: occ.occurrence_date,
+    day_name: occ.day_name || null,
+    reason: newReason,
+  }, { onConflict: 'occurrence_id' }), 15000);
+  if (holErr) throw holErr;
+  const { data: verify } = await withTimeout(supabase.from('holidays').select('id').eq('occurrence_id', dbOcc.id).maybeSingle(), 15000);
+  if (!verify) throw new Error('Status libur belum tercatat. Coba lagi.');
+  try {
+    await supabase.from('audit_logs').insert({
+      account_id: accountId,
+      action: 'SYNC_HOLIDAY',
+      entity_type: 'holiday',
+      entity_id: dbOcc.id,
+      new_data: { opId: op.id },
+    });
+  } catch { /* audit best-effort */ }
+  return dbOcc.id;
+}
+
+export async function replayCancelHolidayOp(op, opts = {}) {
+  if (!supabase) throw new Error('Backend belum dikonfigurasi.');
+  const payload = op.payload || {};
+  const occ = payload.occurrence || {};
+  const accountId = op.account_id;
+  if (!occ.recurring_schedule_id || !occ.occurrence_date) throw new Error('Data occurrence tidak lengkap.');
+  const { data: dbOcc } = await withTimeout(supabase.from('schedule_occurrences').select('id').eq('account_id', accountId).eq('recurring_schedule_id', occ.recurring_schedule_id).eq('occurrence_date', occ.occurrence_date).maybeSingle(), 15000);
+  if (!dbOcc) return null;
+  if (!opts.force && payload.prevReason !== undefined) {
+    const { data: current } = await withTimeout(
+      supabase.from('holidays').select('reason').eq('occurrence_id', dbOcc.id).maybeSingle(), 15000,
+    );
+    if (current && current.reason !== payload.prevReason) {
+      const conflict = new Error('conflict');
+      conflict.conflict = true;
+      conflict.serverRows = [{ member_id: 'reason', status: 'HOLIDAY', absence_name_snapshot: current.reason }];
+      conflict.dbId = dbOcc.id;
+      throw conflict;
+    }
+  }
+  await withTimeout(supabase.from('holidays').delete().eq('account_id', accountId).eq('occurrence_id', dbOcc.id), 15000);
+  await withTimeout(supabase.from('schedule_occurrences').update({ is_holiday: false }).eq('id', dbOcc.id), 15000);
+  await withTimeout(supabase.from('special_events').update({ linked_holiday_occurrence_id: null }).eq('account_id', accountId).eq('linked_holiday_occurrence_id', dbOcc.id), 15000);
+  try {
+    await supabase.from('audit_logs').insert({
+      account_id: accountId,
+      action: 'CANCEL_HOLIDAY',
+      entity_type: 'holiday',
+      entity_id: dbOcc.id,
+      new_data: { opId: op.id },
+    });
+  } catch { /* audit best-effort */ }
+  return dbOcc.id;
 }
 
 export function touchOp(op, patch) {

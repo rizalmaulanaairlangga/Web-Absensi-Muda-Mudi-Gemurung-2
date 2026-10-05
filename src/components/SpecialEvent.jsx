@@ -20,11 +20,11 @@ export function suggestReplacements(schedules, dateISO) {
   return [];
 }
 
-export function replacementCandidates(schedules, fromISO, days = 45) {
+export function replacementCandidates(schedules, fromISO, backDays = 30, days = 45) {
   const out = [];
   const base = fromISO ? new Date(fromISO + 'T00:00:00') : todayJakarta();
   if (Number.isNaN(base.getTime())) return out;
-  for (let i = 0; i <= days; i++) {
+  for (let i = -backDays; i <= days; i++) {
     const d = new Date(base);
     d.setDate(d.getDate() + i);
     const iso = toISODate(d);
@@ -45,8 +45,15 @@ export function replacementCandidates(schedules, fromISO, days = 45) {
 
 export function defaultReplacement(cands, dateISO) {
   if (!cands.length) return '';
-  const after = cands.find((c) => c.date >= (dateISO || ''));
-  return (after || cands[0]).value;
+  const ref = dateISO || '';
+  let best = null;
+  let bestScore = Infinity;
+  for (const c of cands) {
+    const diff = ref ? Math.abs(new Date(c.date + 'T00:00:00') - new Date(ref + 'T00:00:00')) : 0;
+    const score = diff + (ref && c.date < ref ? 1 : 0);
+    if (score < bestScore) { bestScore = score; best = c; }
+  }
+  return (best || cands[0]).value;
 }
 
 export function SpecialEventModal({ schedules = [], onClose, onCreated }) {
@@ -58,6 +65,8 @@ export function SpecialEventModal({ schedules = [], onClose, onCreated }) {
   const [end, setEnd] = React.useState('21:30');
   const [replaced, setReplaced] = React.useState('');
   const [touchedReplace, setTouchedReplace] = React.useState(false);
+  const [repReason, setRepReason] = React.useState('');
+  const [touchedRepReason, setTouchedRepReason] = React.useState(false);
   const [error, setError] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [created, setCreated] = React.useState(null);
@@ -101,10 +110,16 @@ export function SpecialEventModal({ schedules = [], onClose, onCreated }) {
       return;
     }
     setReplaced(defaultReplacement(options, date));
-  }, [date]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [date, options]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const chosenReplacement = options.find((o) => String(o.value) === String(replaced));
   const replacementDiffers = Boolean(chosenReplacement && chosenReplacement.date !== date);
+  const typeName = (types.find((t) => String(t.id) === String(typeId)) || {}).name || '';
+
+  React.useEffect(() => {
+    if (touchedRepReason) return;
+    setRepReason(chosenReplacement ? `Digantikan oleh ${typeName || 'pengajian khusus'}` : '');
+  }, [chosenReplacement, typeName, touchedRepReason]);
 
   async function persistLocalEvent(ev) {    try {
       const snap = (await loadSnapshot(account.id)) || {};
@@ -166,11 +181,11 @@ export function SpecialEventModal({ schedules = [], onClose, onCreated }) {
       occurrence_time: sch?.event_time || start,
       occurrence_end_time: sch?.end_time || end,
       day_name: dayName(repChoice.date),
-      reason: `Digantikan: ${typeRow?.name || 'pengajian khusus'}`,
+      reason: (touchedRepReason ? repReason : null) || `Digantikan oleh ${typeRow?.name || 'pengajian khusus'}`,
     } : null;
     setBusy(true);
     try {
-      if (!online || !supabaseReady) {
+      if (isGuest || !online || !supabaseReady) {
         await enqueue(createSpecialEventOp(account.id, ev, rep));
         await persistLocalEvent(ev);
         setCreated(ev);
@@ -265,6 +280,17 @@ export function SpecialEventModal({ schedules = [], onClose, onCreated }) {
         <div className="banner info"><span>Jadwal {chosenReplacement.label} akan otomatis ditandai libur setelah tersimpan. Jadwal master tidak dihapus.{replacementDiffers ? ' Tanggalnya berbeda dengan pengajian khusus, itu valid.' : ''}</span></div>
       ) : (
         <div className="banner warn"><span>Pilih jadwal rutin yang digantikan bila pengajian khusus ini menggantikan salah satunya, meskipun tanggalnya berbeda. Dibiarkan kosong berarti tidak ada libur otomatis.</span></div>
+      )}
+      {replaced && chosenReplacement && (
+        <label className="field"><span>Alasan libur pengganti</span>
+          <textarea
+            className="input"
+            rows={2}
+            value={repReason}
+            onChange={(e) => { setRepReason(e.target.value); setTouchedRepReason(true); }}
+            placeholder="Digantikan oleh pengajian khusus"
+          />
+        </label>
       )}
       {error && <p className="field-error">{error}</p>}
     </Modal>

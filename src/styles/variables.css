@@ -66,6 +66,12 @@
   --space-10: 40px;
   --space-12: 48px;
   --space-16: 64px;
+  --z-header: 20;
+  --z-nav: 30;
+  --z-menu: 40;
+  --z-modal: 50;
+  --z-toast: 60;
+  --z-popover: 80;
 }
 
 [data-theme="dark"] {

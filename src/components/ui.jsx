@@ -1,5 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
+import { AnchoredPopover } from './popover.jsx';
 
 export function Icon({ d, size = 24, children }) {
   return (
@@ -159,6 +160,20 @@ export function ArrowLeftIcon({ size = 16 }) {
     </svg>
   );
 }
+export function FilterIcon({ size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 5h18l-7 8v5l-4 2v-7z" />
+    </svg>
+  );
+}
+export function DownloadIcon({ size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3v12 M7 10l5 5 5-5 M4 21h16" />
+    </svg>
+  );
+}
 
 export function BottomNav() {
   return (
@@ -223,25 +238,99 @@ export function Empty({ title, desc, action }) {  return (
   );
 }
 
-export function BarChart({ rows }) {
-  const max = Math.max(1, ...rows.map((r) => r.hadir + r.izin + r.alpha));
+const SCHED_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+
+function schedShortDate(iso) {
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return String(iso || '').slice(8, 10);
+  return `${d.getDate()} ${SCHED_SHORT[d.getMonth()]}`;
+}
+
+function schedNiceMax(v) {
+  const steps = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 80, 100, 120, 150, 200, 250, 300, 400, 500];
+  for (const s of steps) if (s >= v) return s;
+  return Math.ceil(v / 500) * 500;
+}
+
+export function ScheduleChart({ items, emptyTitle = 'Belum ada data', emptyDesc = 'Belum ada jadwal pada periode dan filter ini.', onSelect }) {
+  if (!items?.length) return <Empty title={emptyTitle} desc={emptyDesc} />;
+  const clickable = typeof onSelect === 'function';
+  const totals = items.map((r) => (r.hadir || 0) + (r.izin || 0) + (r.alpha || 0));
+  const max = schedNiceMax(Math.max(1, ...totals));
+  const H = 264, PADL = 32, PADR = 10, PADT = 24, PADB = 44;
+  const slot = 58;
+  const W = PADL + items.length * slot + PADR;
+  const plotH = H - PADT - PADB;
+  const y = (v) => PADT + plotH - (v / max) * plotH;
+  const ticks = [0, 1, 2, 3, 4].map((i) => Math.round((max * i) / 4)).filter((t, i, a) => i === 0 || t !== a[i - 1]);
+  const bw = Math.min(34, slot * 0.55);
+  const summary = items.map((r) => `${schedShortDate(r.dateISO)}: H${r.hadir || 0} I${r.izin || 0} A${r.alpha || 0}`).join('; ');
   return (
-    <div className="chart-bar">
-      {rows.map((r) => (
-        <div className="chart-row" key={r.label}>
-          <span>{r.label}</span>
-          <span className="bar-track" role="img" aria-label={`${r.label}: hadir ${r.hadir}, izin ${r.izin}, alpha ${r.alpha}`}>
-            <span className="bar-fill" style={{ width: `${(r.hadir/max)*100}%`, background: '#22C55E' }} />
-            <span className="bar-fill" style={{ width: `${(r.izin/max)*100}%`, background: '#F59E0B' }} />
-            <span className="bar-fill" style={{ width: `${(r.alpha/max)*100}%`, background: '#EF4444' }} />
-          </span>
-          <span>{r.hadir + r.izin + r.alpha}</span>
-        </div>
-      ))}
-      <div className="legend">
+    <div className="chart-wrap">
+      <div className="legend chart-legend" aria-label="Keterangan">
         <span className="lg"><span className="mark hadir">✓</span> Hadir</span>
         <span className="lg"><span className="mark izin">I</span> Izin</span>
         <span className="lg"><span className="mark alpha">A</span> Alpha</span>
+      </div>
+      <div className="chart-scroll">
+      <svg
+        className="sched-chart"
+        viewBox={`0 0 ${W} ${H}`}
+        style={{ minWidth: W, width: '100%', height: 'auto', display: 'block' }}
+        role="img"
+        aria-label={`Diagram kehadiran per jadwal. ${summary}`}
+      >
+        {ticks.map((t) => (
+          <g key={t}>
+            <line x1={PADL} x2={W - PADR} y1={y(t)} y2={y(t)} className="sb-grid" />
+            <text x={PADL - 6} y={y(t) + 4} textAnchor="end" className="sb-tick">{t}</text>
+          </g>
+        ))}
+        <line x1={PADL} x2={W - PADR} y1={y(0)} y2={y(0)} className="sb-axis" />
+        {items.map((r, i) => {
+          const total = (r.hadir || 0) + (r.izin || 0) + (r.alpha || 0);
+          const x = PADL + i * slot + (slot - bw) / 2;
+          const hHadir = ((r.hadir || 0) / max) * plotH;
+          const hIzin = ((r.izin || 0) / max) * plotH;
+          const hAlpha = ((r.alpha || 0) / max) * plotH;
+          const yHadir = y(0) - hHadir;
+          const yIzin = yHadir - hIzin;
+          const yAlpha = yIzin - hAlpha;
+          return (
+            <g
+              key={r.key}
+              {...(clickable ? {
+                role: 'button',
+                tabIndex: 0,
+                'aria-label': `Lihat detail ${r.tip}`,
+                style: { cursor: 'pointer' },
+                onClick: () => onSelect(r),
+                onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(r); } },
+              } : {})}
+            >
+              <title>{clickable ? `${r.tip} (buka detail)` : r.tip}</title>
+              {r.muted ? (
+                r.mutedKind === 'libur'
+                  ? <rect x={x} y={y(0) - 8} width={bw} height={8} rx={3} className="sb-libur" />
+                  : <rect x={x} y={y(0) - 8} width={bw} height={8} rx={3} className="sb-kosong" />
+              ) : (
+                <>
+                  {hAlpha > 0 && <rect x={x} y={yAlpha} width={bw} height={Math.max(hAlpha, 0)} className="sb-alpha" />}
+                  {hIzin > 0 && <rect x={x} y={yIzin} width={bw} height={Math.max(hIzin, 0)} className="sb-izin" />}
+                  {hHadir > 0 && <rect x={x} y={yHadir} width={bw} height={Math.max(hHadir, 0)} className="sb-hadir" />}
+                </>
+              )}
+              {total > 0 && (
+                <text x={x + bw / 2} y={y(total) - 6} textAnchor="middle" className="sb-val">{total}</text>
+              )}
+              <text x={x + bw / 2} y={H - 26} textAnchor="middle" className="sb-x">{schedShortDate(r.dateISO)}</text>
+              {r.muted && r.mutedLabel && (
+                <text x={x + bw / 2} y={H - 12} textAnchor="middle" className="sb-xmuted">{r.mutedLabel}</text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
       </div>
     </div>
   );
@@ -266,27 +355,20 @@ export function ChevronDownIcon({ size = 16 }) {
 export function CustomSelect({ value, onChange, options = [], placeholder = 'Pilih...', ariaLabel, disabled = false, className = '' }) {
   const [open, setOpen] = React.useState(false);
   const [active, setActive] = React.useState(-1);
-  const rootRef = React.useRef(null);
+  const btnRef = React.useRef(null);
   const rawId = React.useId();
   const safeId = String(rawId).replace(/[^a-zA-Z0-9]/g, '');
   const typeRef = React.useRef({ text: '', timer: null });
   const selectedIndex = options.findIndex((o) => String(o.value) === String(value));
   const selected = selectedIndex >= 0 ? options[selectedIndex] : null;
 
-  const close = () => { setOpen(false); setActive(-1); };
+  const close = React.useCallback(() => { setOpen(false); setActive(-1); }, []);
   const pick = (idx) => {
     const opt = options[idx];
     if (!opt) return;
     close();
     if (String(opt.value) !== String(value)) onChange?.(opt.value);
   };
-
-  React.useEffect(() => {
-    if (!open) return;
-    const onDoc = (e) => { if (rootRef.current && !rootRef.current.contains(e.target)) close(); };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
 
   function onButtonKey(e) {
     if (disabled) return;
@@ -321,8 +403,9 @@ export function CustomSelect({ value, onChange, options = [], placeholder = 'Pil
   }, [open, active, safeId]);
 
   return (
-    <div ref={rootRef} className={`cselect ${className}`}>
+    <div className={`cselect ${className}`}>
       <button
+        ref={btnRef}
         type="button"
         className={`cselect-btn${selected ? '' : ' is-placeholder'}`}
         aria-haspopup="listbox"
@@ -336,8 +419,8 @@ export function CustomSelect({ value, onChange, options = [], placeholder = 'Pil
         <span className="cselect-value">{selected ? selected.label : placeholder}</span>
         <ChevronDownIcon />
       </button>
-      {open && (
-        <ul className="cselect-list" role="listbox" id={`${safeId}-list`} aria-label={ariaLabel} tabIndex={-1}>
+      <AnchoredPopover anchorRef={btnRef} open={open} onClose={close} className="cselect-list" label={ariaLabel} stretch>
+        <ul role="listbox" id={`${safeId}-list`} aria-label={ariaLabel} tabIndex={-1} style={{ margin: 0, padding: 0, listStyle: 'none' }}>
           {options.map((opt, i) => (
             <li
               key={String(opt.value) + '-' + i}
@@ -353,7 +436,7 @@ export function CustomSelect({ value, onChange, options = [], placeholder = 'Pil
             </li>
           ))}
         </ul>
-      )}
+      </AnchoredPopover>
     </div>
   );
 }
@@ -363,21 +446,14 @@ const ID_MONTHS = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli
 export function MonthPicker({ y, m, onChange, ariaLabel = 'Pilih bulan dan tahun' }) {
   const [open, setOpen] = React.useState(false);
   const [year, setYear] = React.useState(y);
-  const rootRef = React.useRef(null);
+  const btnRef = React.useRef(null);
+  const close = React.useCallback(() => setOpen(false), []);
 
   React.useEffect(() => { if (!open) setYear(y); }, [y, open ]);
 
-  React.useEffect(() => {
-    if (!open) return;
-    const onDoc = (e) => { if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false); };
-    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('mousedown', onDoc);
-    document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
-  }, [open ]);
-
   function onGridKey(e) {
-    const btns = [...rootRef.current.querySelectorAll('.mp-month')];
+    const scope = e.currentTarget?.closest?.('.mpick-pop') || document;
+    const btns = [...scope.querySelectorAll('.mp-month')];
     const idx = btns.indexOf(document.activeElement);
     if (idx < 0) return;
     let next = null;
@@ -391,8 +467,9 @@ export function MonthPicker({ y, m, onChange, ariaLabel = 'Pilih bulan dan tahun
   }
 
   return (
-    <div ref={rootRef} className="mpick">
+    <div className="mpick">
       <button
+        ref={btnRef}
         type="button"
         className="cselect-btn mpick-btn"
         aria-haspopup="dialog"
@@ -403,28 +480,26 @@ export function MonthPicker({ y, m, onChange, ariaLabel = 'Pilih bulan dan tahun
         <span className="cselect-value">{ID_MONTHS[m - 1]} {y}</span>
         <CalendarIcon size={18} />
       </button>
-      {open && (
-        <div className="mpick-pop" role="dialog" aria-label={ariaLabel}>
-          <div className="mpick-year">
-            <button type="button" className="icon-btn" aria-label="Tahun sebelumnya" onClick={() => setYear((v) => v - 1)}><ChevronLeftIcon /></button>
-            <strong>{year}</strong>
-            <button type="button" className="icon-btn" aria-label="Tahun berikutnya" onClick={() => setYear((v) => v + 1)}><ChevronRightIcon /></button>
-          </div>
-          <div className="mpick-grid" onKeyDown={onGridKey}>
-            {ID_MONTHS.map((name, i) => (
-              <button
-                key={name}
-                type="button"
-                className={`mp-month${year === y && i + 1 === m ? ' selected' : ''}`}
-                autoFocus={year === y && i + 1 === m}
-                onClick={() => { onChange?.({ y: year, m: i + 1 }); setOpen(false); }}
-              >
-                {name.slice(0, name.length > 7 ? 4 : name.length)}
-              </button>
-            ))}
-          </div>
+      <AnchoredPopover anchorRef={btnRef} open={open} onClose={close} className="mpick-pop" label={ariaLabel}>
+        <div className="mpick-year">
+          <button type="button" className="icon-btn" aria-label="Tahun sebelumnya" onClick={() => setYear((v) => v - 1)}><ChevronLeftIcon /></button>
+          <strong>{year}</strong>
+          <button type="button" className="icon-btn" aria-label="Tahun berikutnya" onClick={() => setYear((v) => v + 1)}><ChevronRightIcon /></button>
         </div>
-      )}
+        <div className="mpick-grid" onKeyDown={onGridKey}>
+          {ID_MONTHS.map((name, i) => (
+            <button
+              key={name}
+              type="button"
+              className={`mp-month${year === y && i + 1 === m ? ' selected' : ''}`}
+              autoFocus={year === y && i + 1 === m}
+              onClick={() => { onChange?.({ y: year, m: i + 1 }); setOpen(false); }}
+            >
+              {name.slice(0, name.length > 7 ? 4 : name.length)}
+            </button>
+          ))}
+        </div>
+      </AnchoredPopover>
     </div>
   );
 }

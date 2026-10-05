@@ -1,5 +1,6 @@
 import React from 'react';
 import { CalendarIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon } from './ui.jsx';
+import { AnchoredPopover } from './popover.jsx';
 import { MONTHS } from '../lib/dates.js';
 
 const WEEKDAYS = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
@@ -22,24 +23,13 @@ export function formatLongID(value) {
   return `${p.d} ${MONTHS[p.m - 1]} ${p.y}`;
 }
 
-function useOutsideClose(open, ref, onClose) {
-  React.useEffect(() => {
-    if (!open) return;
-    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('mousedown', onDoc);
-    document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
-  }, [open, ref, onClose]);
-}
-
 export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeholder = 'Pilih tanggal' }) {
   const [open, setOpen] = React.useState(false);
-  const rootRef = React.useRef(null);
+  const btnRef = React.useRef(null);
+  const close = React.useCallback(() => setOpen(false), []);
   const parsed = parseISO(value);
   const today = new Date();
   const [view, setView] = React.useState(() => parsed ? { y: parsed.y, m: parsed.m } : { y: today.getFullYear(), m: today.getMonth() + 1 });
-  useOutsideClose(open, rootRef, () => setOpen(false));
 
   React.useEffect(() => {
     if (open) {
@@ -62,7 +52,8 @@ export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeh
     });
   }
   function onGridKey(e) {
-    const btns = [...rootRef.current.querySelectorAll('.date-day')];
+    const scope = e.currentTarget?.closest?.('.field-pop') || document;
+    const btns = [...scope.querySelectorAll('.date-day')];
     const idx = btns.indexOf(document.activeElement);
     if (idx < 0) return;
     let next = null;
@@ -76,8 +67,9 @@ export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeh
   }
 
   return (
-    <div ref={rootRef} className="field-pick">
+    <div className="field-pick">
       <button
+        ref={btnRef}
         type="button"
         className={`field-btn${value ? '' : ' is-placeholder'}`}
         aria-haspopup="dialog"
@@ -88,35 +80,28 @@ export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeh
         <span className="field-btn-value">{value ? formatLongID(value) : placeholder}</span>
         <CalendarIcon size={18} />
       </button>
-      {open && (
-        <div
-          className="field-pop"
-          role="dialog"
-          aria-label={ariaLabel}
-          onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false); }}
-        >
-          <div className="date-head">
-            <button type="button" className="icon-btn" aria-label="Bulan sebelumnya" onClick={() => shiftMonth(-1)}><ChevronLeftIcon /></button>
-            <strong>{MONTHS[view.m - 1]} {view.y}</strong>
-            <button type="button" className="icon-btn" aria-label="Bulan berikutnya" onClick={() => shiftMonth(1)}><ChevronRightIcon /></button>
-          </div>
-          <div className="date-week">{WEEKDAYS.map((w) => <span key={w}>{w}</span>)}</div>
-          <div className="date-grid" onKeyDown={onGridKey}>
-            {cells.map((d, i) => d === null ? <span key={`b${i}`} /> : (
-              <button
-                key={d}
-                type="button"
-                className={`date-day${toISO(view.y, view.m, d) === value ? ' selected' : ''}${toISO(view.y, view.m, d) === todayISO ? ' today' : ''}`}
-                autoFocus={toISO(view.y, view.m, d) === (value || todayISO)}
-                onClick={() => { onChange?.(toISO(view.y, view.m, d)); setOpen(false); }}
-              >
-                {d}
-              </button>
-            ))}
-          </div>
-          <button type="button" className="btn btn-ghost btn-block" style={{ marginTop: 8 }} onClick={() => setOpen(false)}>Batal</button>
+      <AnchoredPopover anchorRef={btnRef} open={open} onClose={close} className="field-pop" label={ariaLabel}>
+        <div className="date-head">
+          <button type="button" className="icon-btn" aria-label="Bulan sebelumnya" onClick={() => shiftMonth(-1)}><ChevronLeftIcon /></button>
+          <strong>{MONTHS[view.m - 1]} {view.y}</strong>
+          <button type="button" className="icon-btn" aria-label="Bulan berikutnya" onClick={() => shiftMonth(1)}><ChevronRightIcon /></button>
         </div>
-      )}
+        <div className="date-week">{WEEKDAYS.map((w) => <span key={w}>{w}</span>)}</div>
+        <div className="date-grid" onKeyDown={onGridKey}>
+          {cells.map((d, i) => d === null ? <span key={`b${i}`} /> : (
+            <button
+              key={d}
+              type="button"
+              className={`date-day${toISO(view.y, view.m, d) === value ? ' selected' : ''}${toISO(view.y, view.m, d) === todayISO ? ' today' : ''}`}
+              autoFocus={toISO(view.y, view.m, d) === (value || todayISO)}
+              onClick={() => { onChange?.(toISO(view.y, view.m, d)); setOpen(false); }}
+            >
+              {d}
+            </button>
+          ))}
+        </div>
+        <button type="button" className="btn btn-ghost btn-block" style={{ marginTop: 8 }} onClick={() => setOpen(false)}>Batal</button>
+      </AnchoredPopover>
     </div>
   );
 }
@@ -128,13 +113,13 @@ function clockPos(index, total, radiusPct) {
 
 export function TimeField({ value, onChange, ariaLabel = 'Pilih waktu', placeholder = 'Pilih waktu', minuteStep = 5 }) {
   const [open, setOpen] = React.useState(false);
-  const rootRef = React.useRef(null);
+  const btnRef = React.useRef(null);
+  const close = React.useCallback(() => setOpen(false), []);
   const faceRef = React.useRef(null);
   const [hour, setHour] = React.useState(19);
   const [minute, setMinute] = React.useState(30);
   const [mode, setMode] = React.useState('hour');
   const [freeOpen, setFreeOpen] = React.useState(false);
-  useOutsideClose(open, rootRef, () => setOpen(false));
 
   React.useEffect(() => {
     if (open) {
@@ -208,8 +193,9 @@ export function TimeField({ value, onChange, ariaLabel = 'Pilih waktu', placehol
   const innerHours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 
   return (
-    <div ref={rootRef} className="field-pick">
+    <div className="field-pick">
       <button
+        ref={btnRef}
         type="button"
         className={`field-btn${value ? '' : ' is-placeholder'}`}
         aria-haspopup="dialog"
@@ -220,17 +206,11 @@ export function TimeField({ value, onChange, ariaLabel = 'Pilih waktu', placehol
         <span className="field-btn-value">{value ? String(value).slice(0, 5) : placeholder}</span>
         <ClockIcon size={18} />
       </button>
-      {open && (
-        <div
-          className="field-pop time-pop"
-          role="dialog"
-          aria-label={ariaLabel}
-          onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false); }}
-        >
-          <div className="time-head" aria-live="polite">
-            <button type="button" className={`time-head-part${mode === 'hour' ? ' active' : ''}`} onClick={() => setMode('hour')} aria-label="Ubah jam">{pad(hour)}</button>
+      <AnchoredPopover anchorRef={btnRef} open={open} onClose={close} className="field-pop time-pop" label={ariaLabel}>
+        <div className="time-head" aria-live="polite">
+            <button type="button" className={`time-head-part${mode === 'hour' ? ' active' : ''}`} onClick={() => setMode('hour')} aria-label="Ubah jam" aria-pressed={mode === 'hour'}>{pad(hour)}</button>
             <span aria-hidden="true">:</span>
-            <button type="button" className={`time-head-part${mode === 'minute' ? ' active' : ''}`} onClick={() => setMode('minute')} aria-label="Ubah menit">{pad(minute)}</button>
+            <button type="button" className={`time-head-part${mode === 'minute' ? ' active' : ''}`} onClick={() => setMode('minute')} aria-label="Ubah menit" aria-pressed={mode === 'minute'}>{pad(minute)}</button>
           </div>
           <div
             ref={faceRef}
@@ -246,15 +226,15 @@ export function TimeField({ value, onChange, ariaLabel = 'Pilih waktu', placehol
             {mode === 'hour' ? (
               <>
                 {outerHours.map((h, i) => (
-                  <button key={h} type="button" className={`clock-num outer${h === hour ? ' selected' : ''}`} style={clockPos(i, 12, 40)} onClick={() => pickHour(h)} aria-label={`Jam ${pad(h)}`}>{pad(h)}</button>
+                  <button key={h} type="button" className={`clock-num outer${h === hour ? ' selected' : ''}`} style={clockPos(i, 12, 40)} onClick={() => pickHour(h)} aria-label={`Jam ${pad(h)}`} aria-pressed={h === hour}>{pad(h)}</button>
                 ))}
                 {innerHours.map((h, i) => (
-                  <button key={h} type="button" className={`clock-num inner${h === hour ? ' selected' : ''}`} style={clockPos(i, 12, 24)} onClick={() => pickHour(h)} aria-label={`Jam ${pad(h)}`}>{pad(h)}</button>
+                  <button key={h} type="button" className={`clock-num inner${h === hour ? ' selected' : ''}`} style={clockPos(i, 12, 24)} onClick={() => pickHour(h)} aria-label={`Jam ${pad(h)}`} aria-pressed={h === hour}>{pad(h)}</button>
                 ))}
               </>
             ) : (
               minutes.map((mm, i) => (
-                <button key={mm} type="button" className={`clock-num${Math.floor(minute / minuteStep) * minuteStep === mm ? ' selected' : ''}`} style={clockPos(i, minutes.length, 37)} onClick={() => setMinute(mm)} aria-label={`Menit ${pad(mm)}`}>{pad(mm)}</button>
+                <button key={mm} type="button" className={`clock-num${Math.floor(minute / minuteStep) * minuteStep === mm ? ' selected' : ''}`} style={clockPos(i, minutes.length, 37)} onClick={() => setMinute(mm)} aria-label={`Menit ${pad(mm)}`} aria-pressed={Math.floor(minute / minuteStep) * minuteStep === mm}>{pad(mm)}</button>
               ))
             )}
           </div>
@@ -269,8 +249,10 @@ export function TimeField({ value, onChange, ariaLabel = 'Pilih waktu', placehol
                     type="number"
                     min="0"
                     max="59"
+                    inputMode="numeric"
                     value={minute}
                     onChange={(e) => setMinute(Math.min(59, Math.max(0, Number(e.target.value || 0))))}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setFreeOpen(false); confirm(hour, minute); } }}
                   />
                 </label>
                 <button type="button" className="btn btn-primary" onClick={() => { setFreeOpen(false); confirm(hour, minute); }}>OK</button>
@@ -281,8 +263,7 @@ export function TimeField({ value, onChange, ariaLabel = 'Pilih waktu', placehol
             <button type="button" className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setOpen(false)}>Batal</button>
             <button type="button" className="btn btn-primary" style={{ flex: 1 }} onClick={() => confirm(hour, minute)}>Pilih</button>
           </div>
-        </div>
-      )}
+      </AnchoredPopover>
     </div>
   );
 }

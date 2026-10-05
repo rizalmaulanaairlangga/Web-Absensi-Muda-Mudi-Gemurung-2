@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from '../lib/store.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { idbGet, idbSet } from '../lib/idb.js';
@@ -72,9 +72,19 @@ function Crud({ title, desc, items, onAdd, onEdit, onDelete, placeholder }) {
 }
 
 export default function Admin() {
-  const { account, isGuest, supabaseReady, toast } = useApp();
+  const { account, isGuest, supabaseReady, toast, loadSnapshot } = useApp();
   const navigate = useNavigate();
-  const [view, setView] = useState('menu');
+  const location = useLocation();
+  const view = location.pathname.endsWith('/anggota')
+    ? 'anggota'
+    : location.pathname.endsWith('/pengajian')
+      ? 'pengajian'
+      : location.pathname.endsWith('/materi')
+        ? 'materi'
+        : 'menu';
+  function go(v) {
+    navigate(v === 'menu' ? '/admin' : `/admin/${v}`);
+  }
   const [members, setMembers] = useState([]);
   const [schedules, setSchedules] = useState([]);
   const [lockHours, setLockHours] = useState(24);
@@ -86,6 +96,7 @@ export default function Admin() {
   const [fCat, setFCat] = useState('all');
   const [fStatus, setFStatus] = useState('all');
   const [fActive, setFActive] = useState('all');
+  const [fAge, setFAge] = useState('all');
 
   const [absence, setAbsence] = useMaster(account, 'absence', DEFAULT_ABSENCE, 'absence_types');
   const [statuses, setStatuses] = useMaster(account, 'status', DEFAULT_STATUS, 'member_statuses');
@@ -95,6 +106,8 @@ export default function Admin() {
   const [specials, setSpecials] = useMaster(account, 'special', DEFAULT_SPECIAL_TYPES, 'special_event_types');
   const [specEvents, setSpecEvents] = useState([]);
   const [specLoading, setSpecLoading] = useState(false);
+  const [scheduleModal, setScheduleModal] = useState(null);
+  const [scheduleForm, setScheduleForm] = useState({ dow: 3, start: '19:30', end: '21:30' });
 
   useEffect(() => {
     (async () => {
@@ -119,10 +132,17 @@ export default function Admin() {
 
   useEffect(() => {
     (async () => {
-      if (view !== 'pengajian' || !account || isGuest || !supabaseReady) return;
-      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      if (view !== 'pengajian' || !account) return;
       setSpecLoading(true);
       try {
+        if (isGuest || !supabaseReady || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+          const snap = await loadSnapshot(account.id).catch(() => null);
+          const list = snap?.specials || [];
+          const att = snap?.specialAtt || {};
+          setSpecEvents(list.map((e) => ({ ...e, submitted: Boolean((att[e.id] || []).length), replaced_date: null })));
+          setSpecLoading(false);
+          return;
+        }
         const { data: evs } = await supabase.from('special_events').select('*').eq('account_id', account.id).order('event_date', { ascending: false }).limit(50);
         const list = evs || [];
         const ids = list.map((e) => e.id);
@@ -172,17 +192,46 @@ export default function Admin() {
   }
 
   async function addSchedule(dow, start, end) {
-    if (!start || !end) { toast('Isi jam mulai dan jam selesai.'); return; }
-    if (end <= start) { toast('Jam selesai harus lebih besar dari jam mulai.'); return; }
+    if (!start || !end) { toast('Isi jam mulai dan jam selesai.'); return false; }
+    if (end <= start) { toast('Jam selesai harus lebih besar dari jam mulai.'); return false; }
     if (isGuest || !supabaseReady) {
       const ns = [...schedules, { id: `sch_${Date.now()}`, day_of_week: dow, event_time: start, end_time: end, active: true }];
       setSchedules(ns); persistLocal({ schedules: ns });
     } else {
       const { data, error } = await supabase.from('recurring_schedules').insert({ account_id: account.id, day_of_week: dow, event_time: start, end_time: end }).select().single();
-      if (error) { toast('Gagal menambah jadwal.'); return; }
+      if (error) { toast('Gagal menambah jadwal.'); return false; }
       setSchedules((p) => [...p, { id: data.id, day_of_week: data.day_of_week, event_time: String(data.event_time).slice(0, 5), end_time: data.end_time ? String(data.end_time).slice(0, 5) : null, active: true }]);
     }
     toast('Jadwal rutin ditambahkan. Berlaku untuk jadwal ke depan.');
+    return true;
+  }
+  async function editSchedule(id, dow, start, end) {
+    if (!start || !end) { toast('Isi jam mulai dan jam selesai.'); return false; }
+    if (end <= start) { toast('Jam selesai harus lebih besar dari jam mulai.'); return false; }
+    if (isGuest || !supabaseReady) {
+      const ns = schedules.map((x) => x.id === id ? { ...x, day_of_week: dow, event_time: start, end_time: end } : x);
+      setSchedules(ns); persistLocal({ schedules: ns });
+    } else {
+      const { error } = await supabase.from('recurring_schedules').update({ day_of_week: dow, event_time: start, end_time: end }).eq('id', id);
+      if (error) { toast('Gagal menyimpan perubahan.'); return false; }
+      setSchedules((p) => p.map((x) => x.id === id ? { ...x, day_of_week: dow, event_time: start, end_time: end } : x));
+    }
+    toast('Jadwal rutin diperbarui. Berlaku untuk jadwal ke depan.');
+    return true;
+  }
+  function openAddSchedule() {
+    setScheduleForm({ dow: 3, start: '19:30', end: '21:30' });
+    setScheduleModal('add');
+  }
+  function openEditSchedule(s) {
+    setScheduleForm({ dow: s.day_of_week, start: String(s.event_time).slice(0, 5), end: String(s.end_time || '').slice(0, 5) });
+    setScheduleModal(s.id);
+  }
+  async function saveScheduleModal() {
+    const ok = scheduleModal === 'add'
+      ? await addSchedule(Number(scheduleForm.dow), scheduleForm.start, scheduleForm.end)
+      : await editSchedule(scheduleModal, Number(scheduleForm.dow), scheduleForm.start, scheduleForm.end);
+    if (ok) setScheduleModal(null);
   }
   async function delSchedule(s) {
     if (!window.confirm(`Hapus jadwal ${DAYS[s.day_of_week]} ${timeRange(s.event_time, s.end_time)}? Histori yang sudah tersimpan tidak ikut berubah.`)) return;
@@ -197,13 +246,24 @@ export default function Admin() {
 
   if (!account) return <div className="card"><Empty title="Perlu masuk" desc="Masuk untuk mengelola data." /></div>;
 
-  const activeFilterCount = [fGender, fCat, fStatus, fActive].filter((v) => v !== 'all').length + (q.trim() ? 1 : 0);
+  const activeFilterCount = [fGender, fCat, fStatus, fActive, fAge].filter((v) => v !== 'all').length + (q.trim() ? 1 : 0);
   function resetFilters() {
     setQ('');
     setFGender('all');
     setFCat('all');
     setFStatus('all');
     setFActive('all');
+    setFAge('all');
+  }
+  function ageOf(birth) {
+    if (!birth) return null;
+    const d = new Date(`${birth}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return null;
+    const now = new Date();
+    let a = now.getFullYear() - d.getFullYear();
+    const m = now.getMonth() - d.getMonth();
+    if (m < 0 || (m === 0 && now.getDate() < d.getDate())) a -= 1;
+    return a;
   }
   const filteredMembers = members.filter((m) => {
     const needle = q.trim().toLowerCase();
@@ -215,6 +275,15 @@ export default function Admin() {
     else if (fStatus !== 'all' && stName !== fStatus) return false;
     if (fActive === 'active' && !m.active) return false;
     if (fActive === 'inactive' && m.active) return false;
+    if (fAge === '__none') { if (m.birth_date) return false; }
+    else if (fAge !== 'all') {
+      const a = ageOf(m.birth_date);
+      if (a === null) return false;
+      if (fAge === 'lt13' && !(a < 13)) return false;
+      if (fAge === 't13_17' && !(a >= 13 && a <= 17)) return false;
+      if (fAge === 't18_25' && !(a >= 18 && a <= 25)) return false;
+      if (fAge === 'gt25' && !(a > 25)) return false;
+    }
     return true;
   });
 
@@ -250,9 +319,35 @@ export default function Admin() {
 
   function BackButton() {
     return (
-      <button className="btn" style={{ marginBottom: 12 }} onClick={() => setView('menu')}>
+      <button className="btn" style={{ marginBottom: 12 }} onClick={() => go('menu')}>
         <ArrowLeftIcon /> Kembali ke Admin
       </button>
+    );
+  }
+
+  function ScheduleModal() {
+    if (!scheduleModal) return null;
+    const isAdd = scheduleModal === 'add';
+    return (
+      <Modal
+        title={isAdd ? 'Tambah Jadwal Rutin' : 'Edit Jadwal Rutin'}
+        onClose={() => setScheduleModal(null)}
+        foot={<><button className="btn" onClick={() => setScheduleModal(null)}>Batal</button><button className="btn btn-primary" onClick={saveScheduleModal}>Simpan</button></>}
+      >
+        <label className="field"><span>Hari</span>
+          <CustomSelect
+            value={scheduleForm.dow}
+            ariaLabel="Hari jadwal"
+            placeholder="Pilih hari"
+            options={DAYS.map((d, i) => ({ value: i, label: d }))}
+            onChange={(v) => setScheduleForm((p) => ({ ...p, dow: Number(v) }))}
+          />
+        </label>
+        <div className="row cols-2">
+          <label className="field"><span>Jam mulai</span><TimeField value={scheduleForm.start} onChange={(v) => setScheduleForm((p) => ({ ...p, start: v }))} ariaLabel="Jam mulai jadwal" /></label>
+          <label className="field" style={{ marginBottom: 0 }}><span>Jam selesai</span><TimeField value={scheduleForm.end} onChange={(v) => setScheduleForm((p) => ({ ...p, end: v }))} ariaLabel="Jam selesai jadwal" /></label>
+        </div>
+      </Modal>
     );
   }
 
@@ -333,6 +428,18 @@ export default function Admin() {
                   options={[{ value: 'all', label: 'Semua' }, { value: 'active', label: 'Aktif' }, { value: 'inactive', label: 'Tidak Aktif' }]}
                   onChange={setFActive} />
               </div>
+              <div className="field" style={{ marginBottom: 0 }}><span>Kelompok usia</span>
+                <CustomSelect value={fAge} ariaLabel="Filter kelompok usia" placeholder="Semua Usia"
+                  options={[
+                    { value: 'all', label: 'Semua Usia' },
+                    { value: 'lt13', label: 'Di bawah 13' },
+                    { value: 't13_17', label: '13–17 tahun' },
+                    { value: 't18_25', label: '18–25 tahun' },
+                    { value: 'gt25', label: 'Di atas 25' },
+                    { value: '__none', label: 'Tanpa tanggal lahir' },
+                  ]}
+                  onChange={setFAge} />
+              </div>
             </div>
           )}
             {filteredMembers.length === 0 && <p className="hint">Belum ada anggota yang cocok.</p>}
@@ -380,6 +487,7 @@ export default function Admin() {
             <div className="admin-sub">
               <div className="admin-sub-head">
                 <div><h3 className="card-title" style={{ fontSize: 15 }}>Jadwal Rutin</h3><p className="card-desc" style={{ marginBottom: 0 }}>Hari dan jam boleh berbeda tiap jadwal.</p></div>
+                <button className="btn btn-primary" style={{ minHeight: 40, padding: '8px 12px', fontSize: 13 }} onClick={openAddSchedule}><PlusIcon /> Tambah</button>
               </div>
               {schedules.length === 0 && <p className="hint">Belum ada jadwal rutin.</p>}
               {schedules.map((s) => (
@@ -388,10 +496,12 @@ export default function Admin() {
                     <div className="schedule-day">{DAYS[s.day_of_week]}</div>
                     <div className="schedule-time"><ClockIcon size={14} /> {timeRange(s.event_time, s.end_time)}</div>
                   </div>
-                  <button className="icon-btn danger" aria-label={`Hapus jadwal ${DAYS[s.day_of_week]}`} onClick={() => delSchedule(s)}><TrashIcon /></button>
+                  <span className="master-actions">
+                    <button className="icon-btn edit" aria-label={`Edit jadwal ${DAYS[s.day_of_week]}`} onClick={() => openEditSchedule(s)}><PencilIcon /></button>
+                    <button className="icon-btn danger" aria-label={`Hapus jadwal ${DAYS[s.day_of_week]}`} onClick={() => delSchedule(s)}><TrashIcon /></button>
+                  </span>
                 </div>
               ))}
-              <AddSchedule onAdd={addSchedule} />
               <label className="field" style={{ marginTop: 12, marginBottom: 0 }}>
                 <span>Batas perubahan absensi (jam, dihitung dari jam mulai jadwal)</span>
                 <input className="input" type="number" min="1" max="168" value={lockHours} onChange={(e) => saveLock(Number(e.target.value))} />
@@ -435,6 +545,7 @@ export default function Admin() {
             )}
           </div>
         </section>
+        <ScheduleModal />
       </div>
     );
   }
@@ -481,7 +592,7 @@ export default function Admin() {
             <li>Data anggota</li>
             <li>Status anggota</li>
           </ul>
-          <button className="btn btn-primary btn-block" onClick={() => setView('anggota')}>Kelola Anggota</button>
+          <button className="btn btn-primary btn-block" onClick={() => go('anggota')}>Kelola Anggota</button>
         </div>
         <div className="menu-card">
           <div className="menu-icon" aria-hidden="true"><BookOpenIcon /></div>
@@ -492,7 +603,7 @@ export default function Admin() {
             <li>Jenis izin</li>
             <li>Pengajian khusus</li>
           </ul>
-          <button className="btn btn-primary btn-block" onClick={() => setView('pengajian')}>Kelola Pengajian</button>
+          <button className="btn btn-primary btn-block" onClick={() => go('pengajian')}>Kelola Pengajian</button>
         </div>
         <div className="menu-card">
           <div className="menu-icon" aria-hidden="true"><LayersIcon /></div>
@@ -503,29 +614,9 @@ export default function Admin() {
             <li>Materi</li>
             <li>Pemateri</li>
           </ul>
-          <button className="btn btn-primary btn-block" onClick={() => setView('materi')}>Kelola Materi</button>
+          <button className="btn btn-primary btn-block" onClick={() => go('materi')}>Kelola Materi</button>
         </div>
       </div>
-    </div>
-  );
-}
-
-function AddSchedule({ onAdd }) {
-  const [dow, setDow] = useState(3);
-  const [start, setStart] = useState('19:30');
-  const [end, setEnd] = useState('21:30');
-  return (
-    <div style={{ marginTop: 10, borderTop: '1px solid var(--border-subtle)', paddingTop: 12 }}>
-      <div className="row cols-3">
-        <div className="field"><span>Hari</span>
-          <CustomSelect value={dow} ariaLabel="Hari jadwal" placeholder="Pilih hari"
-            options={DAYS.map((d, i) => ({ value: i, label: d }))}
-            onChange={(v) => setDow(Number(v))} />
-        </div>
-        <div className="field"><span>Jam mulai</span><TimeField value={start} onChange={setStart} ariaLabel="Jam mulai jadwal" /></div>
-        <div className="field"><span>Jam selesai</span><TimeField value={end} onChange={setEnd} ariaLabel="Jam selesai jadwal" /></div>
-      </div>
-      <button className="btn btn-primary btn-block" onClick={() => onAdd(dow, start, end)}><PlusIcon /> Tambah Jadwal</button>
     </div>
   );
 }

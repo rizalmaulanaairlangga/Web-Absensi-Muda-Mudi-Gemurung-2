@@ -85,6 +85,39 @@ export function createSpecialAttendanceOp(accountId, event, rows) {
   };
 }
 
+function baseHolidayOp(accountId, occurrence, reason, prevReason, operationType) {
+  const now = Date.now();
+  const cleanReason = String(reason ?? '').trim() || null;
+  return {
+    id: uid('q'),
+    account_id: accountId,
+    operation_type: operationType,
+    entity_type: 'holiday',
+    entity_id: null,
+    payload: {
+      label: `Libur • ${occurrence?.occurrence_date || ''}`,
+      occurrence: { ...(occurrence || {}) },
+      reason: cleanReason,
+      prevReason: prevReason === undefined ? undefined : (String(prevReason ?? '').trim() || null),
+    },
+    created_at: now,
+    updated_at: now,
+    status: 'pending',
+    retry_count: 0,
+    next_retry_at: 0,
+    last_error: null,
+    synced_at: null,
+  };
+}
+
+export function createHolidayOp(accountId, occurrence, reason, prevReason) {
+  return baseHolidayOp(accountId, occurrence, reason, prevReason, 'SAVE_HOLIDAY');
+}
+
+export function createCancelHolidayOp(accountId, occurrence, prevReason) {
+  return baseHolidayOp(accountId, occurrence, null, prevReason, 'CANCEL_HOLIDAY');
+}
+
 function normalizeStatus(s) {
   const v = String(s || 'pending').toUpperCase();
   if (v === 'PENDING') return 'pending';
@@ -166,8 +199,31 @@ export function normalizeOp(raw) {
       serverRows: raw.serverRows || undefined,
     };
   }
-  if (raw.type === 'SAVE_ATTENDANCE' && (raw.accountId || raw.account_id) && raw.occurrence) {
-    const now = Date.now();
+  if ((raw.operation_type === 'SAVE_HOLIDAY' || raw.operation_type === 'CANCEL_HOLIDAY') && raw.account_id && raw.payload && raw.payload.occurrence) {
+    return {
+      id: String(raw.id || uid('q')),
+      account_id: raw.account_id,
+      operation_type: raw.operation_type,
+      entity_type: raw.entity_type || 'holiday',
+      entity_id: raw.entity_id || null,
+      payload: {
+        label: raw.payload.label || '',
+        occurrence: { ...(raw.payload.occurrence || {}) },
+        reason: raw.payload.reason ?? null,
+        prevReason: raw.payload.prevReason,
+      },
+      created_at: Number(raw.created_at) || Date.now(),
+      updated_at: Number(raw.updated_at) || Date.now(),
+      status: normalizeStatus(raw.status),
+      retry_count: Number(raw.retry_count ?? 0) || 0,
+      next_retry_at: Number(raw.next_retry_at) || 0,
+      last_error: raw.last_error || null,
+      synced_at: raw.synced_at || null,
+      serverRows: raw.serverRows || undefined,
+      dbId: raw.dbId || undefined,
+    };
+  }
+  if (raw.type === 'SAVE_ATTENDANCE' && (raw.accountId || raw.account_id) && raw.occurrence) {    const now = Date.now();
     return {
       id: String(raw.id || uid('q')),
       account_id: raw.accountId || raw.account_id,
