@@ -36,6 +36,7 @@ export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeh
       const p = parseISO(value);
       const t = new Date();
       setView(p ? { y: p.y, m: p.m } : { y: t.getFullYear(), m: t.getMonth() + 1 });
+      setLevel('dates');
     }
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -51,6 +52,25 @@ export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeh
       return { y: d.getFullYear(), m: d.getMonth() + 1 };
     });
   }
+  const [level, setLevel] = React.useState('dates');
+  const [panelYear, setPanelYear] = React.useState(view.y);
+  const [yearBase, setYearBase] = React.useState(() => Math.floor(view.y / 12) * 12);
+  function openMonths() {
+    setPanelYear(view.y);
+    setLevel('months');
+  }
+  function openYears() {
+    setYearBase(Math.floor(panelYear / 12) * 12);
+    setLevel('years');
+  }
+  function shiftYears(delta) {
+    setYearBase((b) => Math.min(2088, Math.max(1900, b + delta)));
+  }
+  function shiftPanelYear(delta) {
+    const next = Math.min(2099, Math.max(1900, panelYear + delta));
+    setPanelYear(next);
+    setYearBase(Math.floor(next / 12) * 12);
+  }
   function onGridKey(e) {
     const scope = e.currentTarget?.closest?.('.field-pop') || document;
     const btns = [...scope.querySelectorAll('.date-day')];
@@ -61,6 +81,20 @@ export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeh
     else if (e.key === 'ArrowLeft') next = idx - 1;
     else if (e.key === 'ArrowDown') next = idx + 7;
     else if (e.key === 'ArrowUp') next = idx - 7;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = btns.length - 1;
+    if (next !== null && btns[next]) { e.preventDefault(); btns[next].focus(); }
+  }
+  function onPickKey(e, cls) {
+    const scope = e.currentTarget?.closest?.('.field-pop') || document;
+    const btns = [...scope.querySelectorAll(cls)];
+    const idx = btns.indexOf(document.activeElement);
+    if (idx < 0) return;
+    let next = null;
+    if (e.key === 'ArrowRight') next = idx + 1;
+    else if (e.key === 'ArrowLeft') next = idx - 1;
+    else if (e.key === 'ArrowDown') next = idx + 3;
+    else if (e.key === 'ArrowUp') next = idx - 3;
     else if (e.key === 'Home') next = 0;
     else if (e.key === 'End') next = btns.length - 1;
     if (next !== null && btns[next]) { e.preventDefault(); btns[next].focus(); }
@@ -81,25 +115,108 @@ export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeh
         <CalendarIcon size={18} />
       </button>
       <AnchoredPopover anchorRef={btnRef} open={open} onClose={close} className="field-pop" label={ariaLabel}>
-        <div className="date-head">
-          <button type="button" className="icon-btn" aria-label="Bulan sebelumnya" onClick={() => shiftMonth(-1)}><ChevronLeftIcon /></button>
-          <strong>{MONTHS[view.m - 1]} {view.y}</strong>
-          <button type="button" className="icon-btn" aria-label="Bulan berikutnya" onClick={() => shiftMonth(1)}><ChevronRightIcon /></button>
+        <div
+          className="date-head"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && level !== 'dates') { e.stopPropagation(); setLevel(level === 'years' ? 'months' : 'dates'); }
+          }}
+        >
+          {level === 'dates' && (
+            <>
+              <button type="button" className="icon-btn" aria-label="Bulan sebelumnya" onClick={() => shiftMonth(-1)}><ChevronLeftIcon /></button>
+              <button
+                type="button"
+                className="date-title-btn"
+                aria-label="Pilih bulan"
+                title="Pilih bulan"
+                onClick={openMonths}
+              >
+                {MONTHS[view.m - 1]} {view.y}
+              </button>
+              <button type="button" className="icon-btn" aria-label="Bulan berikutnya" onClick={() => shiftMonth(1)}><ChevronRightIcon /></button>
+            </>
+          )}
+          {level === 'months' && (
+            <>
+              <button type="button" className="icon-btn" aria-label="Tahun sebelumnya" onClick={() => shiftPanelYear(-1)}><ChevronLeftIcon /></button>
+              <button
+                type="button"
+                className="date-title-btn"
+                aria-label="Pilih tahun"
+                title="Pilih tahun"
+                onClick={openYears}
+              >
+                {panelYear}
+              </button>
+              <button type="button" className="icon-btn" aria-label="Tahun berikutnya" onClick={() => shiftPanelYear(1)}><ChevronRightIcon /></button>
+            </>
+          )}
+          {level === 'years' && (
+            <>
+              <button type="button" className="icon-btn" aria-label="12 tahun sebelumnya" onClick={() => shiftYears(-12)}><ChevronLeftIcon /></button>
+              <button
+                type="button"
+                className="date-title-btn"
+                aria-label="Kembali ke pilihan bulan"
+                title="Kembali ke pilihan bulan"
+                onClick={() => setLevel('months')}
+              >
+                {yearBase} – {yearBase + 11}
+              </button>
+              <button type="button" className="icon-btn" aria-label="12 tahun berikutnya" onClick={() => shiftYears(12)}><ChevronRightIcon /></button>
+            </>
+          )}
         </div>
-        <div className="date-week">{WEEKDAYS.map((w) => <span key={w}>{w}</span>)}</div>
-        <div className="date-grid" onKeyDown={onGridKey}>
-          {cells.map((d, i) => d === null ? <span key={`b${i}`} /> : (
-            <button
-              key={d}
-              type="button"
-              className={`date-day${toISO(view.y, view.m, d) === value ? ' selected' : ''}${toISO(view.y, view.m, d) === todayISO ? ' today' : ''}`}
-              autoFocus={toISO(view.y, view.m, d) === (value || todayISO)}
-              onClick={() => { onChange?.(toISO(view.y, view.m, d)); setOpen(false); }}
-            >
-              {d}
-            </button>
-          ))}
-        </div>
+        {level === 'months' && (
+          <div className="mpick-grid" onKeyDown={(e) => onPickKey(e, '.my-month')}>
+            {MONTHS.map((name, i) => (
+              <button
+                key={name}
+                type="button"
+                className={`mp-month my-month${panelYear === view.y && i + 1 === view.m ? ' selected' : ''}`}
+                aria-pressed={panelYear === view.y && i + 1 === view.m}
+                aria-label={`${name} ${panelYear}`}
+                onClick={() => { setView({ y: panelYear, m: i + 1 }); setLevel('dates'); }}
+              >
+                {name.slice(0, name.length > 7 ? 4 : name.length)}
+              </button>
+            ))}
+          </div>
+        )}
+        {level === 'years' && (
+          <div className="mpick-grid" onKeyDown={(e) => onPickKey(e, '.my-year')}>
+            {Array.from({ length: 12 }, (_, i) => yearBase + i).map((y) => (
+              <button
+                key={y}
+                type="button"
+                className={`mp-month my-year${y === panelYear ? ' selected' : ''}`}
+                aria-pressed={y === panelYear}
+                aria-label={`Tahun ${y}`}
+                onClick={() => { setPanelYear(y); setLevel('months'); }}
+              >
+                {y}
+              </button>
+            ))}
+          </div>
+        )}
+        {level === 'dates' && (
+          <>
+            <div className="date-week">{WEEKDAYS.map((w) => <span key={w}>{w}</span>)}</div>
+            <div className="date-grid" onKeyDown={onGridKey}>
+              {cells.map((d, i) => d === null ? <span key={`b${i}`} /> : (
+                <button
+                  key={d}
+                  type="button"
+                  className={`date-day${toISO(view.y, view.m, d) === value ? ' selected' : ''}${toISO(view.y, view.m, d) === todayISO ? ' today' : ''}`}
+                  autoFocus={toISO(view.y, view.m, d) === (value || todayISO)}
+                  onClick={() => { onChange?.(toISO(view.y, view.m, d)); setOpen(false); }}
+                >
+                  {d}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
         <button type="button" className="btn btn-ghost btn-block" style={{ marginTop: 8 }} onClick={() => setOpen(false)}>Batal</button>
       </AnchoredPopover>
     </div>
