@@ -865,6 +865,45 @@ select.input option,
 }
 .conflict-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
+/* QR scanner */
+.qr-wrap { display: grid; gap: 10px; }
+.qr-view {
+  position: relative; border-radius: var(--radius-lg); overflow: hidden;
+  border: 1.5px solid var(--border-default); background: var(--bg-surface-tertiary);
+  min-height: 260px; display: grid; place-items: center;
+}
+.qr-region { width: 100%; }
+.qr-region video { width: 100% !important; border-radius: var(--radius-md); display: block; }
+.qr-region img { display: none; }
+.qr-frame {
+  position: absolute; left: 50%; top: 50%; width: 220px; height: 220px;
+  transform: translate(-50%, -50%); border-radius: var(--radius-lg);
+  border: 2px solid var(--color-primary-500); box-shadow: 0 0 0 4000px rgba(15, 23, 42, 0.25);
+  pointer-events: none;
+}
+.qr-result {
+  border: 1.5px solid rgba(34, 197, 94, 0.45); background: var(--attendance-present-bg);
+  border-radius: var(--radius-lg); padding: 14px; display: grid; gap: 6px; text-align: center;
+}
+.qr-result.warn { border-color: rgba(245, 158, 11, 0.5); background: var(--attendance-permitted-bg); }
+.qr-result.bad { border-color: rgba(239, 68, 68, 0.45); background: var(--attendance-absent-bg); }
+.qr-result strong { font-size: 16px; }
+.qr-id {
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px;
+  background: var(--bg-surface); border: 1px solid var(--border-default);
+  border-radius: var(--radius-md); padding: 8px 10px; word-break: break-all;
+}
+.qr-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.qr-actions .btn { flex: 1; min-width: 140px; }
+.qr-line {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+  padding: 10px 12px; background: var(--bg-surface-secondary);
+}
+.btn-qr { background: var(--color-primary-100); border-color: var(--color-primary-300); color: var(--color-primary-800); }
+.btn-qr:hover { background: var(--color-primary-200); border-color: var(--color-primary-500); }
+[data-theme="dark"] .btn-qr { color: #D6EFFF; }
+
 /* Status sinkronisasi yang bisa diklik untuk coba lagi */
 button.status-pill { cursor: pointer; font: inherit; }
 button.status-pill:hover { border-color: var(--color-primary-400); }

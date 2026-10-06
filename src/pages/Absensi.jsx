@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useApp, clientId, withTimeout } from '../lib/store.jsx';
 import { createAttendanceOp, createHolidayOp, createCancelHolidayOp } from '../services/sync/syncQueue.js';
 import { loadMastersCache, saveMastersCache, ensureMasterLists } from '../lib/masters.js';
@@ -10,6 +10,7 @@ import { todayJakarta, toISODate, formatID, dayName, dayOfWeek, isWithinWindow, 
 import { surahName } from '../lib/quran.js';
 import { DEFAULT_ABSENCE, DEFAULT_STATUS, DEFAULT_HADITH, DEFAULT_FREE, DEFAULT_SPECIAL_TYPES, DEFAULT_SPEAKERS, guestSeed } from '../lib/seed.js';
 import { Modal, Empty, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, ChevronDownIcon, ClockIcon, PlusIcon, CustomSelect, EyeIcon, RefreshIcon, TrashIcon, PencilIcon, MonthPicker, StatusBadge } from '../components/ui.jsx';
+import QrScanner, { shortQr } from '../components/QrScanner.jsx';
 import MemberRow from '../components/MemberRow.jsx';
 
 function timeRange(start, end) {
@@ -21,7 +22,7 @@ function timeRange(start, end) {
 function blankStore(accountId) {
   return {
     accountId,
-    members: guestSeed().map((m, i) => ({ id: `seed-${i}`, account_id: accountId, full_name: m.full_name, nickname: m.nickname, gender: m.gender, status: i % 3 === 0 ? 'Sekolah' : i % 3 === 1 ? 'Kuliah' : 'Bekerja', joined_at: '2025-01-05', active: true })),
+    members: guestSeed().map((m, i) => ({ id: `seed-${i}`, account_id: accountId, full_name: m.full_name, nickname: m.nickname, gender: m.gender, status: i % 3 === 0 ? 'Sekolah' : i % 3 === 1 ? 'Kuliah' : 'Bekerja', joined_at: '2025-01-05', active: true, qr_identifier: null })),
     absenceTypes: DEFAULT_ABSENCE.map((n, i) => ({ id: `iz-${i}`, name: n })),
     statuses: DEFAULT_STATUS.map((n, i) => ({ id: `st-${i}`, name: n })),
     hadith: DEFAULT_HADITH.map((n, i) => ({ id: `hd-${i}`, name: n })),
@@ -101,6 +102,91 @@ function occKeyOf(occ) {
 }
 
 const MAT_OFF = { quran: false, hadith: false, nasehat: false, free: false };
+
+function QrResultPanel({ result, onScanAgain, onDone, onConfirmIzin, onRegister }) {
+  if (!result) return null;
+  const name = result.member ? (result.member.nickname || result.member.full_name) : '';
+  if (result.kind === 'marked') {
+    return (
+      <div className="qr-result" role="status" style={{ marginBottom: 12 }}>
+        <strong>✓ {name} — Hadir</strong>
+        <span className="hint">Checkbox anggota otomatis tercentang. Tekan Kirim Absensi untuk menyimpan.</span>
+        <div className="qr-actions">
+          <button type="button" className="btn btn-primary" onClick={onScanAgain}>Scan Anggota Berikutnya</button>
+          <button type="button" className="btn" onClick={onDone}>Selesai</button>
+        </div>
+      </div>
+    );
+  }
+  if (result.kind === 'already') {
+    return (
+      <div className="qr-result" role="status" style={{ marginBottom: 12 }}>
+        <strong>{name} ✓ Sudah ditandai hadir</strong>
+        <div className="qr-actions">
+          <button type="button" className="btn btn-primary" onClick={onScanAgain}>Scan Anggota Berikutnya</button>
+          <button type="button" className="btn" onClick={onDone}>Selesai</button>
+        </div>
+      </div>
+    );
+  }
+  if (result.kind === 'confirm-izin') {
+    return (
+      <div className="qr-result warn" role="alert" style={{ marginBottom: 12 }}>
+        <strong>{name} saat ini Izin — {result.izinName}</strong>
+        <span className="hint">Apakah ingin mengubah menjadi Hadir?</span>
+        <div className="qr-actions">
+          <button type="button" className="btn" onClick={onDone}>Batal</button>
+          <button type="button" className="btn btn-primary" onClick={onConfirmIzin}>Ubah menjadi Hadir</button>
+        </div>
+      </div>
+    );
+  }
+  if (result.kind === 'unknown') {
+    return (
+      <div className="qr-result bad" role="alert" style={{ marginBottom: 12 }}>
+        <strong>QR belum terdaftar</strong>
+        <span className="qr-id">{shortQr(result.raw, 24, 12)}</span>
+        <span className="hint">QR ini belum dikaitkan dengan anggota di aplikasi.</span>
+        <div className="qr-actions">
+          <button type="button" className="btn" onClick={onDone}>Tutup</button>
+          <button type="button" className="btn btn-primary" onClick={onRegister}>Daftarkan QR</button>
+        </div>
+      </div>
+    );
+  }
+  if (result.kind === 'nodata') {
+    return (
+      <div className="qr-result bad" role="alert" style={{ marginBottom: 12 }}>
+        <strong>Data anggota belum tersedia offline</strong>
+        <span className="hint">Sambungkan ke internet untuk memperbarui data anggota, lalu scan ulang.</span>
+        <div className="qr-actions">
+          <button type="button" className="btn" onClick={onDone}>Tutup</button>
+        </div>
+      </div>
+    );
+  }
+  if (result.kind === 'inactive') {
+    return (
+      <div className="qr-result warn" role="status" style={{ marginBottom: 12 }}>
+        <strong>{name} tidak eligible pada jadwal ini</strong>
+        <span className="hint">Anggota nonaktif atau belum bergabung saat jadwal berlangsung.</span>
+        <div className="qr-actions">
+          <button type="button" className="btn" onClick={onDone}>Tutup</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="qr-result bad" role="alert" style={{ marginBottom: 12 }}>
+      <strong>QR tidak dapat dibaca</strong>
+      <span className="hint">Arahkan kamera lebih dekat, pastikan QR terlihat penuh dan pencahayaan cukup.</span>
+      <div className="qr-actions">
+        <button type="button" className="btn" onClick={onDone}>Tutup</button>
+        <button type="button" className="btn btn-primary" onClick={onScanAgain}>Coba Lagi</button>
+      </div>
+    </div>
+  );
+}
 export default function Absensi() {
   const {
     account, isGuest, online, toast, enqueue, supabaseReady,
@@ -115,6 +201,7 @@ export default function Absensi() {
   const [selectedKey, setSelectedKey] = useState(null);
   const [answers, setAnswers] = useState({});
   const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
   const specialId = params.get('special');
   const showCreateSpecial = params.get('newSpecial') === '1';
   const [localSpecials, setLocalSpecials] = useState({});
@@ -141,6 +228,9 @@ export default function Absensi() {
   const [tableLoading, setTableLoading] = useState(false);
   const [tableError, setTableError] = useState('');
   const [showConflicts, setShowConflicts] = useState(false);
+  const [qrScanOpen, setQrScanOpen] = useState(false);
+  const [qrScanKey, setQrScanKey] = useState(0);
+  const [qrResult, setQrResult] = useState(null);
   const [mat, setMat] = useState({ ...MAT_OFF, surah: '', ayat: '', pemateriQ: '', hadithId: '', halaman: '', pemateriH: '', nasehatBy: '', freeId: '', freeBy: '' });
   const [collapsedSecs, setCollapsedSecs] = useState({ quran: false, hadith: false, nasehat: false, free: false });
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -309,7 +399,7 @@ export default function Absensi() {
       const cachedMasters = await loadMastersCache(aid);
       const s = {
         accountId: aid,
-        members: (mem.data || []).map((m) => ({ id: m.id, full_name: m.full_name, nickname: m.nickname, gender: m.gender, joined_at: m.joined_at, active: m.active })),
+        members: (mem.data || []).map((m) => ({ id: m.id, full_name: m.full_name, nickname: m.nickname, gender: m.gender, joined_at: m.joined_at, active: m.active, qr_identifier: m.qr_identifier || null })),
         absenceTypes,
         schedules,
         lockHours: sett.data?.lock_duration_hours ?? 24,
@@ -529,6 +619,47 @@ export default function Absensi() {
   }
   function toggleAlpha(id) {
     setAnswers((p) => ({ ...p, [id]: p[id]?.alpha ? {} : { alpha: true } }));
+  }
+
+  function displayNameOf(m) {
+    return m.nickname || m.full_name;
+  }
+
+  function openQrScan() {
+    if (!occ) return;
+    if (submitted && !editing) { toast('Tekan Edit Absensi Ini untuk mengubah kehadiran.'); return; }
+    if (!windowOpen) { toast(`Absensi belum dapat diisi. Baru dapat diisi mulai pukul ${windowOpenAt(occ.occurrence_time)}, yaitu 30 menit sebelum acara dimulai.`); return; }
+    if (!editable) { toast('Absensi ini tidak dapat diubah lagi. Batas waktu perubahan telah berakhir.'); return; }
+    setQrResult(null);
+    setQrScanKey((k) => k + 1);
+    setQrScanOpen(true);
+  }
+
+  function onQrDecoded(rawText) {
+    const raw = String(rawText || '').trim();
+    setQrScanOpen(false);
+    if (!raw) { setQrResult({ kind: 'invalid' }); return; }
+    const list = storeRef.current?.members || [];
+    const found = list.find((m) => (m.qr_identifier || '') !== '' && m.qr_identifier === raw);
+    if (!found) {
+      const hasAnyQr = list.some((m) => (m.qr_identifier || '') !== '');
+      setQrResult({ kind: hasAnyQr || online ? 'unknown' : 'nodata', raw });
+      return;
+    }
+    if (!found.active || (found.joined_at && occ && found.joined_at > occ.occurrence_date)) {
+      setQrResult({ kind: 'inactive', member: found });
+      return;
+    }
+    const cur = answers[found.id] || {};
+    if (cur.hadir) { setQrResult({ kind: 'already', member: found }); return; }
+    if (cur.izin) { setQrResult({ kind: 'confirm-izin', member: found, izinName: cur.izin }); return; }
+    setHadir(found.id, true);
+    setQrResult({ kind: 'marked', member: found });
+  }
+
+  function confirmQrIzinToHadir() {
+    if (qrResult?.member) setHadir(qrResult.member.id, true);
+    setQrResult(qrResult?.member ? { kind: 'marked', member: qrResult.member } : null);
   }
 
   const windowOpen = occ ? isWithinWindow(occ.occurrence_date, occ.occurrence_time) : false;
@@ -1066,6 +1197,9 @@ export default function Absensi() {
         </div>
 
         <div className="form-quick-actions" aria-label="Aksi cepat jadwal">
+          <button type="button" className="btn-quick btn-qr" onClick={openQrScan}>
+            <EyeIcon /> Scan QR
+          </button>
           <button type="button" className="btn-quick btn-libur" onClick={openHolidayCreate}>
             <ClockIcon /> Tandai Libur
           </button>
@@ -1109,6 +1243,16 @@ export default function Absensi() {
               <span className="lg"><span className="mark alpha">A</span> Tombol A = Alpha</span>
               <span className="lg">Kosong = belum diisi, dihitung Alpha saat simpan</span>
             </div>
+            {qrScanOpen && (
+              <QrScanner
+                key={qrScanKey}
+                title="Scan QR Kehadiran"
+                hint="Arahkan kamera ke QR kartu fisik anggota."
+                onResult={onQrDecoded}
+                onClose={() => setQrScanOpen(false)}
+              />
+            )}
+            {qrResult && <QrResultPanel result={qrResult} onScanAgain={openQrScan} onDone={() => setQrResult(null)} onConfirmIzin={confirmQrIzinToHadir} onRegister={() => navigate('/admin/anggota')} />}
             <div className="member-groups">
               {renderGroup('LAKI-LAKI', 'male', males, maleOpen, setMaleOpen)}
               {renderGroup('PEREMPUAN', 'female', females, femaleOpen, setFemaleOpen)}

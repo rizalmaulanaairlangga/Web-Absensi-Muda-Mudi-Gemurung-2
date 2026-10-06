@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabaseClient.js';
 import { idbGet, idbSet } from '../lib/idb.js';
 import { DEFAULT_ABSENCE, DEFAULT_STATUS, DEFAULT_HADITH, DEFAULT_FREE, DEFAULT_SPEAKERS, DEFAULT_SPECIAL_TYPES, MEMBER_CATEGORIES } from '../lib/seed.js';
 import { Modal, Empty, PlusIcon, TrashIcon, PencilIcon, ClockIcon, CustomSelect, UsersIcon, BookOpenIcon, LayersIcon, ArrowLeftIcon, StatusBadge } from '../components/ui.jsx';
+import QrScanner, { shortQr } from '../components/QrScanner.jsx';
 import { formatDateShortID, formatID } from '../lib/dates.js';
 import { DateField, TimeField } from '../components/fields.jsx';
 
@@ -89,7 +90,9 @@ export default function Admin() {
   const [schedules, setSchedules] = useState([]);
   const [lockHours, setLockHours] = useState(24);
   const [memberModal, setMemberModal] = useState(null);
-  const [memberForm, setMemberForm] = useState({ full_name: '', nickname: '', gender: 'MALE', status: '', category: '', birth_date: '', active: true });
+  const [memberForm, setMemberForm] = useState({ full_name: '', nickname: '', gender: 'MALE', status: '', category: '', birth_date: '', active: true, qr: '' });
+  const [qrScanOpen, setQrScanOpen] = useState(false);
+  const [qrConfirm, setQrConfirm] = useState(null);
   const [q, setQ] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [fGender, setFGender] = useState('all');
@@ -287,6 +290,39 @@ export default function Admin() {
     return true;
   });
 
+  function qrMissingColumn(err) {
+    return /qr_identifier/i.test(String(err?.message || err || ''));
+  }
+
+  async function onQrDecoded(rawText) {
+    const raw = String(rawText || '').trim();
+    setQrScanOpen(false);
+    if (!raw) { toast('QR tidak dapat dibaca. Coba lagi.'); return; }
+    const currentId = memberModal !== 'add' ? memberModal : null;
+    const localOwner = members.find((m) => (m.qr_identifier || '') !== '' && m.qr_identifier === raw && m.id !== currentId);
+    let owner = localOwner ? { id: localOwner.id, name: localOwner.nickname || localOwner.full_name } : null;
+    if (!owner && !isGuest && supabaseReady && online) {
+      try {
+        const { data } = await supabase.from('members').select('id,nickname,full_name').eq('account_id', account.id).eq('qr_identifier', raw).maybeSingle();
+        if (data && data.id !== currentId) owner = { id: data.id, name: data.nickname || data.full_name };
+      } catch { /* gunakan hasil lokal */ }
+    }
+    setQrConfirm({ raw, owner });
+  }
+
+  function useQrResult() {
+    if (!qrConfirm || qrConfirm.owner) return;
+    setMemberForm((p) => ({ ...p, qr: qrConfirm.raw }));
+    setQrConfirm(null);
+    toast('QR siap disimpan. Tekan Simpan untuk menyimpan perubahan anggota.');
+  }
+
+  function removeQr() {
+    if (!memberForm.qr) return;
+    if (!window.confirm('Hapus QR dari anggota ini? Data absensi historis tidak ikut dihapus.')) return;
+    setMemberForm((p) => ({ ...p, qr: '' }));
+  }
+
   async function saveMember() {
     if (!memberForm.full_name.trim()) { toast('Nama lengkap wajib diisi.'); return; }
     const statusId = memberForm.status ? (statuses.find((s) => s.name === memberForm.status)?.id || null) : null;
@@ -297,6 +333,7 @@ export default function Admin() {
       member_category: memberForm.category || null,
       birth_date: memberForm.birth_date || null,
       active: memberForm.active,
+      qr_identifier: memberForm.qr ? memberForm.qr : null,
     };
     if (isGuest || !supabaseReady) {
       if (memberModal === 'add') {
@@ -306,12 +343,20 @@ export default function Admin() {
         const ns = members.map((m) => m.id === memberModal ? { ...m, ...payloadBase, status: memberForm.status } : m); setMembers(ns); persistLocal({ members: ns });
       }
     } else {
-      if (memberModal === 'add') {
-        const { data } = await supabase.from('members').insert({ account_id: account.id, ...payloadBase, status_id: statusId }).select().single();
-        if (data) setMembers((p) => [...p, { ...data, member_statuses: statusId ? { name: memberForm.status } : null }]);
-      } else {
-        await supabase.from('members').update({ ...payloadBase, status_id: statusId }).eq('id', memberModal);
-        setMembers((p) => p.map((m) => m.id === memberModal ? { ...m, ...payloadBase, status_id: statusId, member_statuses: statusId ? { name: memberForm.status } : null } : m));
+      try {
+        if (memberModal === 'add') {
+          const { data, error } = await supabase.from('members').insert({ account_id: account.id, ...payloadBase, status_id: statusId }).select().single();
+          if (error) throw error;
+          if (data) setMembers((p) => [...p, { ...data, member_statuses: statusId ? { name: memberForm.status } : null }]);
+        } else {
+          const { error } = await supabase.from('members').update({ ...payloadBase, status_id: statusId }).eq('id', memberModal);
+          if (error) throw error;
+          setMembers((p) => p.map((m) => m.id === memberModal ? { ...m, ...payloadBase, status_id: statusId, member_statuses: statusId ? { name: memberForm.status } : null } : m));
+        }
+      } catch (e) {
+        if (qrMissingColumn(e)) { toast('Database belum memiliki kolom QR. Jalankan migration QR di SQL Editor lalu coba lagi.'); return; }
+        toast('Gagal menyimpan. Periksa koneksi lalu coba lagi.');
+        return;
       }
     }
     setMemberModal(null); toast('Data anggota tersimpan.');
@@ -383,6 +428,44 @@ export default function Admin() {
             options={[{ value: '1', label: 'Aktif' }, { value: '0', label: 'Nonaktif' }]}
             onChange={(v) => setMemberForm({ ...memberForm, active: v === '1' })} />
         </label>
+        <div className="field"><span>QR Anggota</span>
+          {memberForm.qr ? (
+            <div className="qr-line">
+              <span><strong>✓ QR terdaftar</strong><br /><span className="hint" style={{ fontFamily: 'ui-monospace, Menlo, Consolas, monospace' }}>{shortQr(memberForm.qr)}</span></span>
+              <span className="master-actions">
+                <button type="button" className="btn" style={{ minHeight: 40 }} onClick={() => setQrScanOpen(true)}>Scan Ulang</button>
+                <button type="button" className="btn" style={{ minHeight: 40 }} onClick={removeQr}>Hapus</button>
+              </span>
+            </div>
+          ) : (
+            <div className="qr-line">
+              <span className="hint">Belum terdaftar</span>
+              <button type="button" className="btn btn-primary" style={{ minHeight: 40 }} onClick={() => setQrScanOpen(true)}>Scan QR</button>
+            </div>
+          )}
+        </div>
+        {qrScanOpen && (
+          <QrScanner title="Scan QR Anggota" hint="Arahkan kamera ke QR kartu fisik." onResult={onQrDecoded} onClose={() => setQrScanOpen(false)} />
+        )}
+        {qrConfirm && (
+          <Modal
+            title={qrConfirm.owner ? 'QR Sudah Terdaftar' : 'QR Berhasil Dibaca'}
+            onClose={() => setQrConfirm(null)}
+            foot={qrConfirm.owner
+              ? <button className="btn btn-primary" onClick={() => setQrConfirm(null)}>Mengerti</button>
+              : <><button className="btn" onClick={() => setQrConfirm(null)}>Batal</button><button className="btn btn-primary" onClick={useQrResult}>Gunakan QR Ini</button></>}
+          >
+            {qrConfirm.owner ? (
+              <div className="banner danger"><span>QR ini sudah terdaftar pada anggota: {qrConfirm.owner.name}. Satu QR tidak boleh dipakai dua anggota.</span></div>
+            ) : (
+              <div className="qr-result">
+                <strong>QR berhasil dibaca</strong>
+                <span className="qr-id">{shortQr(qrConfirm.raw, 24, 12)}</span>
+                <span className="hint">Anggota: {memberForm.nickname || memberForm.full_name || '-'}{memberForm.qr ? ' (mengganti QR lama setelah Simpan)' : ''}</span>
+              </div>
+            )}
+          </Modal>
+        )}
       </Modal>
     );
   }
@@ -396,7 +479,7 @@ export default function Admin() {
           <div className="admin-sub">
             <div className="admin-sub-head">
               <div><h3 className="card-title" style={{ fontSize: 15 }}>Data Anggota</h3><p className="card-desc" style={{ marginBottom: 0 }}>{members.filter((m) => m.active).length} aktif dari {members.length} anggota.</p></div>
-              <button className="btn btn-primary" style={{ minHeight: 40, padding: '8px 12px', fontSize: 13 }} onClick={() => { setMemberForm({ full_name: '', nickname: '', gender: 'MALE', status: '', category: '', birth_date: '', active: true }); setMemberModal('add'); }}><PlusIcon /> Tambah</button>
+              <button className="btn btn-primary" style={{ minHeight: 40, padding: '8px 12px', fontSize: 13 }} onClick={() => { setMemberForm({ full_name: '', nickname: '', gender: 'MALE', status: '', category: '', birth_date: '', active: true, qr: '' }); setMemberModal('add'); }}><PlusIcon /> Tambah</button>
             </div>
             <input className="input search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari nama / nickname..." aria-label="Cari anggota" />
           <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -450,14 +533,14 @@ export default function Admin() {
                   <tbody>
                     {filteredMembers.map((m) => (
                       <tr key={m.id} className={m.active ? '' : 'row-inactive'}>
-                        <td><strong>{m.full_name}</strong></td>
+                        <td><strong>{m.full_name}</strong>{m.qr_identifier ? <span> <StatusBadge kind="info">QR</StatusBadge></span> : null}</td>
                         <td>{m.nickname || '-'}</td>
                         <td>{m.member_category || '-'}</td>
                         <td>{m.gender === 'MALE' ? 'Laki-laki' : 'Perempuan'}</td>
                         <td>{m.member_statuses?.name || m.status || <span className="hint">Belum ditentukan</span>}</td>
                         <td>{m.birth_date ? formatDateShortID(m.birth_date) : '-'}</td>
                         <td><StatusBadge kind={m.active ? 'aktif' : 'nonaktif'}>{m.active ? 'Aktif' : 'Nonaktif'}</StatusBadge></td>
-                        <td><button className="icon-btn edit" aria-label={`Edit ${m.nickname || m.full_name}`} onClick={() => { setMemberForm({ full_name: m.full_name, nickname: m.nickname || '', gender: m.gender, status: m.member_statuses?.name || m.status || '', category: m.member_category || '', birth_date: m.birth_date || '', active: m.active, id: m.id }); setMemberModal(m.id); }}><PencilIcon /></button></td>
+                        <td><button className="icon-btn edit" aria-label={`Edit ${m.nickname || m.full_name}`} onClick={() => { setMemberForm({ full_name: m.full_name, nickname: m.nickname || '', gender: m.gender, status: m.member_statuses?.name || m.status || '', category: m.member_category || '', birth_date: m.birth_date || '', active: m.active, qr: m.qr_identifier || '', id: m.id }); setMemberModal(m.id); }}><PencilIcon /></button></td>
                       </tr>
                     ))}
                   </tbody>
