@@ -8,11 +8,11 @@ Tidak ada request ke generus.site, tidak ada parsing isi QR.
 ## 1. Cara mendaftarkan QR anggota
 
 1. Buka Admin → Anggota → Edit anggota (atau Tambah).
-2. Bagian QR Anggota → Scan QR, arahkan kamera ke kartu fisik.
-3. Konfirmasi QR berhasil dibaca → Gunakan QR Ini.
-4. Tekan Simpan. Jika QR sudah milik anggota lain dalam account
-   yang sama, pendaftaran ditolak.
-5. Kolom `qr_identifier` wajib sudah ada di database
+2. Isi kolom QR Anggota dengan ID dari kartu fisik
+   (sama seperti yang terbaca Google Lens, contoh `4001001`).
+3. Tekan Simpan. Bila ID sudah milik anggota lain dalam account
+   yang sama, penyimpanan ditolak dengan pesan yang jelas.
+4. Kolom `qr_identifier` wajib sudah ada di database
    (jalankan migration `supabase/migrations/*_members_qr_identifier.sql`
    sekali di Dashboard > SQL Editor bila kolom belum ada).
 
@@ -20,12 +20,14 @@ Tidak ada request ke generus.site, tidak ada parsing isi QR.
 
 1. Buka Absensi, pilih jadwal yang jendelanya sudah terbuka.
 2. Tekan Scan QR di aksi cepat form.
-3. Scan kartu → anggota otomatis tercentang Hadir.
-4. Jika anggota sudah Hadir: tampil info tanpa duplikat.
-5. Jika anggota berstatus Izin: muncul konfirmasi sebelum diubah
-   menjadi Hadir, tidak diubah diam-diam.
-6. QR tak dikenal: tampil pesan + tombol Daftarkan QR.
-7. Scan hanya mengubah state form. Submit tetap via Kirim Absensi.
+3. Scan kartu → anggota langsung tersimpan HADIR ke database
+   (upsert per member, tidak menunggu Kirim Absensi).
+4. Card anggota langsung hijau.
+5. Jika anggota sudah Hadir: tampil info tanpa duplikat.
+6. Jika anggota berstatus Izin: muncul konfirmasi sebelum diubah
+   menjadi Hadir (record yang sama di-update).
+7. QR tak dikenal: tampil pesan + tombol Daftarkan QR.
+8. Scan hanya mengubah state form. Submit tetap via Kirim Absensi.
 
 ## 3. Cara mengganti QR
 

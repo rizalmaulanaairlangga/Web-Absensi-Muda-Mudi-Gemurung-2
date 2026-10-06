@@ -5,7 +5,6 @@ import { supabase } from '../lib/supabaseClient.js';
 import { idbGet, idbSet } from '../lib/idb.js';
 import { DEFAULT_ABSENCE, DEFAULT_STATUS, DEFAULT_HADITH, DEFAULT_FREE, DEFAULT_SPEAKERS, DEFAULT_SPECIAL_TYPES, MEMBER_CATEGORIES } from '../lib/seed.js';
 import { Modal, Empty, PlusIcon, TrashIcon, PencilIcon, ClockIcon, CustomSelect, UsersIcon, BookOpenIcon, LayersIcon, ArrowLeftIcon, StatusBadge } from '../components/ui.jsx';
-import QrScanner, { shortQr } from '../components/QrScanner.jsx';
 import { formatDateShortID, formatID } from '../lib/dates.js';
 import { DateField, TimeField } from '../components/fields.jsx';
 
@@ -72,8 +71,99 @@ function Crud({ title, desc, items, onAdd, onEdit, onDelete, placeholder }) {
   );
 }
 
+function BackButton({ onBack }) {
+  return (
+    <button className="btn" style={{ marginBottom: 12 }} onClick={onBack}>
+      <ArrowLeftIcon /> Kembali ke Admin
+    </button>
+  );
+}
+
+function ScheduleModal({ scheduleModal, scheduleForm, setScheduleForm, onClose, onSave }) {
+  if (!scheduleModal) return null;
+  const isAdd = scheduleModal === 'add';
+  return (
+    <Modal
+      title={isAdd ? 'Tambah Jadwal Rutin' : 'Edit Jadwal Rutin'}
+      onClose={onClose}
+      foot={<><button className="btn" onClick={onClose}>Batal</button><button className="btn btn-primary" onClick={onSave}>Simpan</button></>}
+    >
+      <label className="field"><span>Hari</span>
+        <CustomSelect
+          value={scheduleForm.dow}
+          ariaLabel="Hari jadwal"
+          placeholder="Pilih hari"
+          options={DAYS.map((d, i) => ({ value: i, label: d }))}
+          onChange={(v) => setScheduleForm((p) => ({ ...p, dow: Number(v) }))}
+        />
+      </label>
+      <div className="row cols-2">
+        <label className="field"><span>Jam mulai</span><TimeField value={scheduleForm.start} onChange={(v) => setScheduleForm((p) => ({ ...p, start: v }))} ariaLabel="Jam mulai jadwal" /></label>
+        <label className="field" style={{ marginBottom: 0 }}><span>Jam selesai</span><TimeField value={scheduleForm.end} onChange={(v) => setScheduleForm((p) => ({ ...p, end: v }))} ariaLabel="Jam selesai jadwal" /></label>
+      </div>
+    </Modal>
+  );
+}
+
+function MemberModal({ memberModal, memberForm, setMemberForm, statuses, onClose, onSave, onRemoveQr }) {
+  if (!memberModal) return null;
+  return (
+    <Modal title={memberModal === 'add' ? 'Tambah anggota' : 'Edit anggota'} onClose={onClose}
+      foot={<><button className="btn" onClick={onClose}>Batal</button><button className="btn btn-primary" onClick={onSave}>Simpan</button></>}>
+      <label className="field"><span>Nama lengkap</span><input className="input" value={memberForm.full_name} onChange={(e) => setMemberForm({ ...memberForm, full_name: e.target.value })} /></label>
+      <label className="field"><span>Nama panggilan (boleh kosong)</span><input className="input" value={memberForm.nickname} onChange={(e) => setMemberForm({ ...memberForm, nickname: e.target.value })} /></label>
+      <div className="row cols-2">
+        <label className="field"><span>Jenis kelamin</span>
+          <CustomSelect value={memberForm.gender} ariaLabel="Jenis kelamin" placeholder="Pilih"
+            options={[{ value: 'MALE', label: 'Laki-laki' }, { value: 'FEMALE', label: 'Perempuan' }]}
+            onChange={(v) => setMemberForm({ ...memberForm, gender: v })} />
+        </label>
+        <label className="field"><span>Kategori</span>
+          <CustomSelect value={memberForm.category} ariaLabel="Kategori anggota" placeholder="Pilih kategori"
+            options={[{ value: '', label: 'Belum ditentukan' }, ...MEMBER_CATEGORIES.map((c) => ({ value: c, label: c }))]}
+            onChange={(v) => setMemberForm({ ...memberForm, category: v })} />
+        </label>
+      </div>
+      <div className="row cols-2">
+        <label className="field"><span>Status</span>
+          <CustomSelect value={memberForm.status} ariaLabel="Status anggota" placeholder="Belum ditentukan"
+            options={[{ value: '', label: 'Belum ditentukan' }, ...statuses.map((s) => ({ value: s.name, label: s.name }))]}
+            onChange={(v) => setMemberForm({ ...memberForm, status: v })} />
+        </label>
+        <label className="field"><span>Tanggal lahir</span><DateField value={memberForm.birth_date} onChange={(v) => setMemberForm({ ...memberForm, birth_date: v })} ariaLabel="Tanggal lahir anggota" placeholder="Pilih tanggal lahir" /></label>
+      </div>
+      <label className="field"><span>Status aktif</span>
+        <CustomSelect value={memberForm.active ? '1' : '0'} ariaLabel="Status aktif" placeholder="Pilih"
+          options={[{ value: '1', label: 'Aktif' }, { value: '0', label: 'Nonaktif' }]}
+          onChange={(v) => setMemberForm({ ...memberForm, active: v === '1' })} />
+      </label>
+      <div className="field"><span>QR Anggota (ID kartu Generus)</span>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            className="input"
+            style={{ fontFamily: 'ui-monospace, Menlo, Consolas, monospace', flex: 1, minWidth: 0 }}
+            value={memberForm.qr}
+            onChange={(e) => setMemberForm({ ...memberForm, qr: e.target.value })}
+            placeholder="Contoh: 4001001"
+            autoComplete="off"
+            aria-label="ID QR anggota"
+          />
+          {memberForm.qr ? (
+            <button type="button" className="btn" style={{ minHeight: 44, flex: 'none' }} onClick={onRemoveQr}>Hapus</button>
+          ) : null}
+        </div>
+        <p className="hint" style={{ marginTop: 6, marginBottom: 0 }}>
+          {memberForm.qr
+            ? 'ID tersimpan setelah tekan Simpan. Satu ID hanya boleh milik satu anggota.'
+            : 'Kosong berarti tanpa QR. Isi sesuai ID yang terbaca di Google Lens.'}
+        </p>
+      </div>
+    </Modal>
+  );
+}
+
 export default function Admin() {
-  const { account, isGuest, supabaseReady, toast, loadSnapshot } = useApp();
+  const { account, isGuest, supabaseReady, toast, loadSnapshot, online } = useApp();
   const navigate = useNavigate();
   const location = useLocation();
   const view = location.pathname.endsWith('/anggota')
@@ -91,8 +181,6 @@ export default function Admin() {
   const [lockHours, setLockHours] = useState(24);
   const [memberModal, setMemberModal] = useState(null);
   const [memberForm, setMemberForm] = useState({ full_name: '', nickname: '', gender: 'MALE', status: '', category: '', birth_date: '', active: true, qr: '' });
-  const [qrScanOpen, setQrScanOpen] = useState(false);
-  const [qrConfirm, setQrConfirm] = useState(null);
   const [q, setQ] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [fGender, setFGender] = useState('all');
@@ -290,31 +378,39 @@ export default function Admin() {
     return true;
   });
 
-  function qrMissingColumn(err) {
-    return /qr_identifier/i.test(String(err?.message || err || ''));
+  function devMember(...args) {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.debug('[MEMBER FORM]', ...args);
+    }
   }
 
-  async function onQrDecoded(rawText) {
-    const raw = String(rawText || '').trim();
-    setQrScanOpen(false);
-    if (!raw) { toast('QR tidak dapat dibaca. Coba lagi.'); return; }
+  function qrMissingColumn(err) {
+    if (err?.code === '42703') return true;
+    const m = String(err?.message || err || '');
+    return /qr_identifier/i.test(m) && /does not exist/i.test(m);
+  }
+
+  function qrDuplicateKey(err) {
+    return err?.code === '23505' || /duplicate key value/i.test(String(err?.message || err || ''));
+  }
+
+  function qrRlsDenied(err) {
+    return err?.code === '42501' || /row-level security|permission denied|not allowed/i.test(String(err?.message || err || ''));
+  }
+
+  async function checkQrDuplicate(qrVal) {
+    if (!qrVal) return null;
     const currentId = memberModal !== 'add' ? memberModal : null;
-    const localOwner = members.find((m) => (m.qr_identifier || '') !== '' && m.qr_identifier === raw && m.id !== currentId);
-    let owner = localOwner ? { id: localOwner.id, name: localOwner.nickname || localOwner.full_name } : null;
-    if (!owner && !isGuest && supabaseReady && online) {
+    const localOwner = members.find((m) => (m.qr_identifier || '') !== '' && m.qr_identifier === qrVal && m.id !== currentId);
+    if (localOwner) return localOwner.nickname || localOwner.full_name;
+    if (!isGuest && supabaseReady && online) {
       try {
-        const { data } = await supabase.from('members').select('id,nickname,full_name').eq('account_id', account.id).eq('qr_identifier', raw).maybeSingle();
-        if (data && data.id !== currentId) owner = { id: data.id, name: data.nickname || data.full_name };
+        const { data } = await supabase.from('members').select('id,nickname,full_name').eq('account_id', account.id).eq('qr_identifier', qrVal).maybeSingle();
+        if (data && data.id !== currentId) return data.nickname || data.full_name;
       } catch { /* gunakan hasil lokal */ }
     }
-    setQrConfirm({ raw, owner });
-  }
-
-  function useQrResult() {
-    if (!qrConfirm || qrConfirm.owner) return;
-    setMemberForm((p) => ({ ...p, qr: qrConfirm.raw }));
-    setQrConfirm(null);
-    toast('QR siap disimpan. Tekan Simpan untuk menyimpan perubahan anggota.');
+    return null;
   }
 
   function removeQr() {
@@ -324,7 +420,19 @@ export default function Admin() {
   }
 
   async function saveMember() {
+    devMember('submit');
     if (!memberForm.full_name.trim()) { toast('Nama lengkap wajib diisi.'); return; }
+    const qrVal = String(memberForm.qr || '').trim();
+    devMember('qr_identifier:', JSON.stringify(qrVal));
+    if (qrVal) {
+      let ownerName = null;
+      try {
+        ownerName = await checkQrDuplicate(qrVal);
+      } catch (e) {
+        devMember('duplicate check error, lanjut dengan guard DB:', e);
+      }
+      if (ownerName) { toast(`QR sudah terdaftar pada anggota: ${ownerName}. Satu QR tidak boleh dipakai dua anggota.`); return; }
+    }
     const statusId = memberForm.status ? (statuses.find((s) => s.name === memberForm.status)?.id || null) : null;
     const payloadBase = {
       full_name: memberForm.full_name.trim(),
@@ -333,7 +441,7 @@ export default function Admin() {
       member_category: memberForm.category || null,
       birth_date: memberForm.birth_date || null,
       active: memberForm.active,
-      qr_identifier: memberForm.qr ? memberForm.qr : null,
+      qr_identifier: qrVal ? qrVal : null,
     };
     if (isGuest || !supabaseReady) {
       if (memberModal === 'add') {
@@ -343,18 +451,24 @@ export default function Admin() {
         const ns = members.map((m) => m.id === memberModal ? { ...m, ...payloadBase, status: memberForm.status } : m); setMembers(ns); persistLocal({ members: ns });
       }
     } else {
+      devMember('payload:', { ...payloadBase, status_id: statusId });
       try {
         if (memberModal === 'add') {
           const { data, error } = await supabase.from('members').insert({ account_id: account.id, ...payloadBase, status_id: statusId }).select().single();
+          devMember('response:', data ? 'ok' : null, 'error:', error);
           if (error) throw error;
           if (data) setMembers((p) => [...p, { ...data, member_statuses: statusId ? { name: memberForm.status } : null }]);
         } else {
           const { error } = await supabase.from('members').update({ ...payloadBase, status_id: statusId }).eq('id', memberModal);
+          devMember('response: ok, error:', error);
           if (error) throw error;
           setMembers((p) => p.map((m) => m.id === memberModal ? { ...m, ...payloadBase, status_id: statusId, member_statuses: statusId ? { name: memberForm.status } : null } : m));
         }
       } catch (e) {
+        devMember('error:', e);
         if (qrMissingColumn(e)) { toast('Database belum memiliki kolom QR. Jalankan migration QR di SQL Editor lalu coba lagi.'); return; }
+        if (qrDuplicateKey(e)) { toast('QR ini sudah terdaftar pada anggota lain. Gunakan ID yang berbeda.'); return; }
+        if (qrRlsDenied(e)) { toast('Izin ditolak database. Periksa kembali hak akses akun ini.'); return; }
         toast('Gagal menyimpan. Periksa koneksi lalu coba lagi.');
         return;
       }
@@ -362,118 +476,10 @@ export default function Admin() {
     setMemberModal(null); toast('Data anggota tersimpan.');
   }
 
-  function BackButton() {
-    return (
-      <button className="btn" style={{ marginBottom: 12 }} onClick={() => go('menu')}>
-        <ArrowLeftIcon /> Kembali ke Admin
-      </button>
-    );
-  }
-
-  function ScheduleModal() {
-    if (!scheduleModal) return null;
-    const isAdd = scheduleModal === 'add';
-    return (
-      <Modal
-        title={isAdd ? 'Tambah Jadwal Rutin' : 'Edit Jadwal Rutin'}
-        onClose={() => setScheduleModal(null)}
-        foot={<><button className="btn" onClick={() => setScheduleModal(null)}>Batal</button><button className="btn btn-primary" onClick={saveScheduleModal}>Simpan</button></>}
-      >
-        <label className="field"><span>Hari</span>
-          <CustomSelect
-            value={scheduleForm.dow}
-            ariaLabel="Hari jadwal"
-            placeholder="Pilih hari"
-            options={DAYS.map((d, i) => ({ value: i, label: d }))}
-            onChange={(v) => setScheduleForm((p) => ({ ...p, dow: Number(v) }))}
-          />
-        </label>
-        <div className="row cols-2">
-          <label className="field"><span>Jam mulai</span><TimeField value={scheduleForm.start} onChange={(v) => setScheduleForm((p) => ({ ...p, start: v }))} ariaLabel="Jam mulai jadwal" /></label>
-          <label className="field" style={{ marginBottom: 0 }}><span>Jam selesai</span><TimeField value={scheduleForm.end} onChange={(v) => setScheduleForm((p) => ({ ...p, end: v }))} ariaLabel="Jam selesai jadwal" /></label>
-        </div>
-      </Modal>
-    );
-  }
-
-  function MemberModal() {
-    if (!memberModal) return null;
-    return (
-      <Modal title={memberModal === 'add' ? 'Tambah anggota' : 'Edit anggota'} onClose={() => setMemberModal(null)}
-        foot={<><button className="btn" onClick={() => setMemberModal(null)}>Batal</button><button className="btn btn-primary" onClick={saveMember}>Simpan</button></>}>
-        <label className="field"><span>Nama lengkap</span><input className="input" value={memberForm.full_name} onChange={(e) => setMemberForm({ ...memberForm, full_name: e.target.value })} /></label>
-        <label className="field"><span>Nama panggilan (boleh kosong)</span><input className="input" value={memberForm.nickname} onChange={(e) => setMemberForm({ ...memberForm, nickname: e.target.value })} /></label>
-        <div className="row cols-2">
-          <label className="field"><span>Jenis kelamin</span>
-            <CustomSelect value={memberForm.gender} ariaLabel="Jenis kelamin" placeholder="Pilih"
-              options={[{ value: 'MALE', label: 'Laki-laki' }, { value: 'FEMALE', label: 'Perempuan' }]}
-              onChange={(v) => setMemberForm({ ...memberForm, gender: v })} />
-          </label>
-          <label className="field"><span>Kategori</span>
-            <CustomSelect value={memberForm.category} ariaLabel="Kategori anggota" placeholder="Pilih kategori"
-              options={[{ value: '', label: 'Belum ditentukan' }, ...MEMBER_CATEGORIES.map((c) => ({ value: c, label: c }))]}
-              onChange={(v) => setMemberForm({ ...memberForm, category: v })} />
-          </label>
-        </div>
-        <div className="row cols-2">
-          <label className="field"><span>Status</span>
-            <CustomSelect value={memberForm.status} ariaLabel="Status anggota" placeholder="Belum ditentukan"
-              options={[{ value: '', label: 'Belum ditentukan' }, ...statuses.map((s) => ({ value: s.name, label: s.name }))]}
-              onChange={(v) => setMemberForm({ ...memberForm, status: v })} />
-          </label>
-          <label className="field"><span>Tanggal lahir</span><DateField value={memberForm.birth_date} onChange={(v) => setMemberForm({ ...memberForm, birth_date: v })} ariaLabel="Tanggal lahir anggota" placeholder="Pilih tanggal lahir" /></label>
-        </div>
-        <label className="field"><span>Status aktif</span>
-          <CustomSelect value={memberForm.active ? '1' : '0'} ariaLabel="Status aktif" placeholder="Pilih"
-            options={[{ value: '1', label: 'Aktif' }, { value: '0', label: 'Nonaktif' }]}
-            onChange={(v) => setMemberForm({ ...memberForm, active: v === '1' })} />
-        </label>
-        <div className="field"><span>QR Anggota</span>
-          {memberForm.qr ? (
-            <div className="qr-line">
-              <span><strong>✓ QR terdaftar</strong><br /><span className="hint" style={{ fontFamily: 'ui-monospace, Menlo, Consolas, monospace' }}>{shortQr(memberForm.qr)}</span></span>
-              <span className="master-actions">
-                <button type="button" className="btn" style={{ minHeight: 40 }} onClick={() => setQrScanOpen(true)}>Scan Ulang</button>
-                <button type="button" className="btn" style={{ minHeight: 40 }} onClick={removeQr}>Hapus</button>
-              </span>
-            </div>
-          ) : (
-            <div className="qr-line">
-              <span className="hint">Belum terdaftar</span>
-              <button type="button" className="btn btn-primary" style={{ minHeight: 40 }} onClick={() => setQrScanOpen(true)}>Scan QR</button>
-            </div>
-          )}
-        </div>
-        {qrScanOpen && (
-          <QrScanner title="Scan QR Anggota" hint="Arahkan kamera ke QR kartu fisik." onResult={onQrDecoded} onClose={() => setQrScanOpen(false)} />
-        )}
-        {qrConfirm && (
-          <Modal
-            title={qrConfirm.owner ? 'QR Sudah Terdaftar' : 'QR Berhasil Dibaca'}
-            onClose={() => setQrConfirm(null)}
-            foot={qrConfirm.owner
-              ? <button className="btn btn-primary" onClick={() => setQrConfirm(null)}>Mengerti</button>
-              : <><button className="btn" onClick={() => setQrConfirm(null)}>Batal</button><button className="btn btn-primary" onClick={useQrResult}>Gunakan QR Ini</button></>}
-          >
-            {qrConfirm.owner ? (
-              <div className="banner danger"><span>QR ini sudah terdaftar pada anggota: {qrConfirm.owner.name}. Satu QR tidak boleh dipakai dua anggota.</span></div>
-            ) : (
-              <div className="qr-result">
-                <strong>QR berhasil dibaca</strong>
-                <span className="qr-id">{shortQr(qrConfirm.raw, 24, 12)}</span>
-                <span className="hint">Anggota: {memberForm.nickname || memberForm.full_name || '-'}{memberForm.qr ? ' (mengganti QR lama setelah Simpan)' : ''}</span>
-              </div>
-            )}
-          </Modal>
-        )}
-      </Modal>
-    );
-  }
-
   if (view === 'anggota') {
     return (
       <div>
-        <BackButton />
+        <BackButton onBack={() => go('menu')} />
         <section className="admin-group" aria-label="Anggota" style={{ marginTop: 0 }}>
           <h3 className="admin-group-head">ANGGOTA</h3>
           <div className="admin-sub">
@@ -555,7 +561,15 @@ export default function Admin() {
               onDelete={(it) => delMaster('member_statuses', setStatuses, it, 'Hapus status')} />
           </div>
         </section>
-        <MemberModal />
+        <MemberModal
+          memberModal={memberModal}
+          memberForm={memberForm}
+          setMemberForm={setMemberForm}
+          statuses={statuses}
+          onClose={() => setMemberModal(null)}
+          onSave={saveMember}
+          onRemoveQr={removeQr}
+        />
       </div>
     );
   }
@@ -563,7 +577,7 @@ export default function Admin() {
   if (view === 'pengajian') {
     return (
       <div>
-        <BackButton />
+        <BackButton onBack={() => go('menu')} />
         <section className="admin-group" aria-label="Pengajian" style={{ marginTop: 0 }}>
           <h3 className="admin-group-head">PENGAJIAN</h3>
           <div className="admin-grid cols-2">
@@ -628,7 +642,13 @@ export default function Admin() {
             )}
           </div>
         </section>
-        <ScheduleModal />
+        <ScheduleModal
+          scheduleModal={scheduleModal}
+          scheduleForm={scheduleForm}
+          setScheduleForm={setScheduleForm}
+          onClose={() => setScheduleModal(null)}
+          onSave={saveScheduleModal}
+        />
       </div>
     );
   }
@@ -636,7 +656,7 @@ export default function Admin() {
   if (view === 'materi') {
     return (
       <div>
-        <BackButton />
+        <BackButton onBack={() => go('menu')} />
         <section className="admin-group" aria-label="Materi" style={{ marginTop: 0 }}>
           <h3 className="admin-group-head">MATERI</h3>
           <div className="admin-grid cols-2">

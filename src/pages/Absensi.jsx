@@ -30,8 +30,8 @@ function blankStore(accountId) {
     speakers: DEFAULT_SPEAKERS.map((n, i) => ({ id: `sp-${i}`, name: n })),
     specialTypes: DEFAULT_SPECIAL_TYPES.map((n, i) => ({ id: `kt-${i}`, name: n })),
     schedules: [
-      { id: 'sch-rabu', day_of_week: 3, event_time: '19:30', end_time: '21:30', active: true },
-      { id: 'sch-jumat', day_of_week: 5, event_time: '19:30', end_time: '21:30', active: true },
+      { id: 'sch-rabu', day_of_week: 3, event_time: '19:30', end_time: '21:00', active: true },
+      { id: 'sch-jumat', day_of_week: 5, event_time: '19:30', end_time: '21:00', active: true },
     ],
     lockHours: 24,
     occurrences: [],
@@ -103,14 +103,56 @@ function occKeyOf(occ) {
 
 const MAT_OFF = { quran: false, hadith: false, nasehat: false, free: false };
 
-function QrResultPanel({ result, onScanAgain, onDone, onConfirmIzin, onRegister }) {
+function MAT_EMPTY() {
+  return { ...MAT_OFF, surah: '', ayat: '', pemateriQ: '', hadithId: '', halaman: '', pemateriH: '', nasehatBy: '', freeId: '', freeBy: '' };
+}
+
+function serverMatsToForm(rows) {
+  const byKind = {};
+  (rows || []).forEach((r) => { byKind[r.kind] = r; });
+  return {
+    quran: Boolean(byKind.QURAN),
+    surah: byKind.QURAN?.quran_surah_number ? String(byKind.QURAN.quran_surah_number) : '',
+    ayat: byKind.QURAN?.ayat_range || '',
+    pemateriQ: byKind.QURAN?.speaker_name_snapshot || '',
+    hadith: Boolean(byKind.HADITH),
+    hadithId: byKind.HADITH?.hadith_name_snapshot || '',
+    halaman: byKind.HADITH?.hadith_page || '',
+    pemateriH: byKind.HADITH?.speaker_name_snapshot || '',
+    nasehat: Boolean(byKind.NASEHAT),
+    nasehatBy: byKind.NASEHAT?.speaker_name_snapshot || '',
+    free: Boolean(byKind.FREE),
+    freeId: byKind.FREE?.free_activity_name_snapshot || '',
+    freeBy: byKind.FREE?.speaker_name_snapshot || '',
+  };
+}
+
+function devEdit(...args) {
+  if (import.meta.env.DEV) {
+    // eslint-disable-next-line no-console
+    console.debug('[EDIT]', ...args);
+  }
+}
+
+function clientMatsToServer(mats, occurrenceId) {
+  return (mats || []).map((mm) => {
+    const r = { kind: mm.kind, occurrence_id: occurrenceId };
+    if (mm.kind === 'QURAN') { r.quran_surah_number = mm.surah ?? null; r.quran_surah_name_snapshot = mm.surahName || null; r.ayat_range = mm.ayat || null; r.speaker_name_snapshot = mm.speaker || null; }
+    if (mm.kind === 'HADITH') { r.hadith_name_snapshot = mm.hadith || null; r.hadith_page = mm.halaman || null; r.speaker_name_snapshot = mm.speaker || null; }
+    if (mm.kind === 'NASEHAT') { r.speaker_name_snapshot = mm.speaker || null; }
+    if (mm.kind === 'FREE') { r.free_activity_name_snapshot = mm.activity || null; r.speaker_name_snapshot = mm.speaker || null; }
+    return r;
+  });
+}
+
+function QrResultPanel({ result, onScanAgain, onDone, onConfirmIzin, onRegister, onRetry, saving }) {
   if (!result) return null;
   const name = result.member ? (result.member.nickname || result.member.full_name) : '';
   if (result.kind === 'marked') {
     return (
       <div className="qr-result" role="status" style={{ marginBottom: 12 }}>
         <strong>✓ {name} — Hadir</strong>
-        <span className="hint">Checkbox anggota otomatis tercentang. Tekan Kirim Absensi untuk menyimpan.</span>
+        <span className="hint">Absensi langsung tersimpan. Tetap tekan Kirim Absensi setelah semua terisi.</span>
         <div className="qr-actions">
           <button type="button" className="btn btn-primary" onClick={onScanAgain}>Scan Anggota Berikutnya</button>
           <button type="button" className="btn" onClick={onDone}>Selesai</button>
@@ -135,8 +177,8 @@ function QrResultPanel({ result, onScanAgain, onDone, onConfirmIzin, onRegister 
         <strong>{name} saat ini Izin — {result.izinName}</strong>
         <span className="hint">Apakah ingin mengubah menjadi Hadir?</span>
         <div className="qr-actions">
-          <button type="button" className="btn" onClick={onDone}>Batal</button>
-          <button type="button" className="btn btn-primary" onClick={onConfirmIzin}>Ubah menjadi Hadir</button>
+          <button type="button" className="btn" disabled={saving} onClick={onDone}>Batal</button>
+          <button type="button" className="btn btn-primary" disabled={saving} onClick={onConfirmIzin}>{saving ? 'Menyimpan...' : 'Ubah menjadi Hadir'}</button>
         </div>
       </div>
     );
@@ -172,6 +214,18 @@ function QrResultPanel({ result, onScanAgain, onDone, onConfirmIzin, onRegister 
         <span className="hint">Anggota nonaktif atau belum bergabung saat jadwal berlangsung.</span>
         <div className="qr-actions">
           <button type="button" className="btn" onClick={onDone}>Tutup</button>
+        </div>
+      </div>
+    );
+  }
+  if (result.kind === 'dberror') {
+    return (
+      <div className="qr-result bad" role="alert" style={{ marginBottom: 12 }}>
+        <strong>Gagal menyimpan absensi{name ? ` ${name}` : ''}. Coba lagi.</strong>
+        <span className="hint">Data tidak berubah.</span>
+        <div className="qr-actions">
+          <button type="button" className="btn" disabled={saving} onClick={onDone}>Tutup</button>
+          <button type="button" className="btn btn-primary" disabled={saving} onClick={onRetry}>{saving ? 'Menyimpan...' : 'Coba Lagi'}</button>
         </div>
       </div>
     );
@@ -231,9 +285,9 @@ export default function Absensi() {
   const [qrScanOpen, setQrScanOpen] = useState(false);
   const [qrScanKey, setQrScanKey] = useState(0);
   const [qrResult, setQrResult] = useState(null);
-  const [mat, setMat] = useState({ ...MAT_OFF, surah: '', ayat: '', pemateriQ: '', hadithId: '', halaman: '', pemateriH: '', nasehatBy: '', freeId: '', freeBy: '' });
-  const [collapsedSecs, setCollapsedSecs] = useState({ quran: false, hadith: false, nasehat: false, free: false });
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [qrSaving, setQrSaving] = useState(false);
+  const skipEditLoadRef = React.useRef(false);
+  const [mat, setMat] = useState(() => MAT_EMPTY());
 
   async function ensureMasters(keys) {
     if (!account || isGuest || !supabaseReady) return;
@@ -322,8 +376,8 @@ export default function Absensi() {
       let absenceTypes = abs.data || [];
       if (schedules.length === 0) {
         const seed = [
-          { day_of_week: 3, event_time: '19:30', end_time: '21:30' },
-          { day_of_week: 5, event_time: '19:30', end_time: '21:30' },
+          { day_of_week: 3, event_time: '19:30', end_time: '21:00' },
+          { day_of_week: 5, event_time: '19:30', end_time: '21:00' },
         ];
         for (const s of seed) {
           const { data } = await supabase.from('recurring_schedules').insert({ account_id: aid, day_of_week: s.day_of_week, event_time: s.event_time, end_time: s.end_time }).select().single();
@@ -550,48 +604,70 @@ export default function Absensi() {
     });
   }, [conflicts, occ]);
 
+  async function readCachedMats(keys) {
+    for (const k of (keys || []).filter(Boolean)) {
+      if (isGuest || !supabaseReady) {
+        const local = await idbGet('guest-data', null);
+        if (local?.mats?.[k]) return local.mats[k];
+      } else {
+        const rows = await idbGet(`mats-${account.id}-${k}`, null);
+        if (rows) return rows;
+      }
+    }
+    return null;
+  }
+
+  async function hydrateEditMats(o) {
+    if (!o || !account) return;
+    devEdit('occurrenceId:', o.id, o.occurrence_date);
+    devEdit('attendance records:', ((storeRef.current?.attendance || {})[o.id] || (storeRef.current?.attendance || {})[o.localKey] || []).length);
+    if (!isGuest && supabaseReady && online && o.id && !String(o.id).startsWith('virt-')) {
+      try {
+        const matDb = await withTimeout(supabase.from('materials').select('*').eq('occurrence_id', o.id), 15000);
+        const rows = matDb.data || [];
+        devEdit('quran records:', rows.some((r) => r.kind === 'QURAN') ? 'ada' : 'kosong');
+        devEdit('hadist records:', rows.some((r) => r.kind === 'HADITH') ? 'ada' : 'kosong');
+        devEdit('nasehat records:', rows.some((r) => r.kind === 'NASEHAT') ? 'ada' : 'kosong');
+        devEdit('free activity records:', rows.some((r) => r.kind === 'FREE') ? 'ada' : 'kosong');
+        setMat(rows.length ? serverMatsToForm(rows) : MAT_EMPTY());
+        await idbSet(`mats-${account.id}-${o.id}`, rows);
+      } catch {
+        const cached = await readCachedMats([o.id, o.localKey]);
+        devEdit('materials (cache offline):', cached ? `${cached.length} baris` : 'kosong');
+        setMat(cached ? serverMatsToForm(cached) : MAT_EMPTY());
+      }
+    } else {
+      const cached = await readCachedMats([o.id, o.localKey, occKeyOf(o)]);
+      devEdit('materials (cache lokal):', cached ? `${cached.length} baris` : 'kosong');
+      setMat(cached ? serverMatsToForm(cached) : MAT_EMPTY());
+    }
+  }
+
   useEffect(() => {
     if (!occ || !store || !account) return;
     const key = attendanceKey;
     (async () => {
       if (editing) {
-        const saved = key ? store.attendance?.[key] : null;
-        if (saved?.length) {
-          const map = {};
-          saved.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : { alpha: true }; });
-          setAnswers(map);
-        } else if (!isGuest && supabaseReady && online && occ.id && !String(occ.id).startsWith('virt-')) {
-          try {
-            const attDb = await withTimeout(supabase.from('attendance').select('*').eq('occurrence_id', occ.id), 15000);
-            if ((attDb.data || []).length > 0) {
-              const map = {};
-              attDb.data.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : { alpha: true }; });
-              setAnswers(map);
-              setStore((p) => ({ ...p, attendance: { ...p.attendance, [occ.id]: attDb.data } }));
-            }
-            const matDb = await withTimeout(supabase.from('materials').select('*').eq('occurrence_id', occ.id), 15000);
-            if ((matDb.data || []).length > 0) {
-              const byKind = {};
-              matDb.data.forEach((r) => { byKind[r.kind] = r; });
-              setMat({
-                quran: Boolean(byKind.QURAN),
-                surah: byKind.QURAN?.quran_surah_number ? String(byKind.QURAN.quran_surah_number) : '',
-                ayat: byKind.QURAN?.ayat_range || '',
-                pemateriQ: byKind.QURAN?.speaker_name_snapshot || '',
-                hadith: Boolean(byKind.HADITH),
-                hadithId: byKind.HADITH?.hadith_name_snapshot || '',
-                halaman: byKind.HADITH?.hadith_page || '',
-                pemateriH: byKind.HADITH?.speaker_name_snapshot || '',
-                nasehat: Boolean(byKind.NASEHAT),
-                nasehatBy: byKind.NASEHAT?.speaker_name_snapshot || '',
-                free: Boolean(byKind.FREE),
-                freeId: byKind.FREE?.free_activity_name_snapshot || '',
-                freeBy: byKind.FREE?.speaker_name_snapshot || '',
-              });
-              setCollapsedSecs({ quran: false, hadith: false, nasehat: false, free: false });
-              setPickerOpen(false);
-            }
-          } catch { /* abaikan, gunakan state lokal */ }
+        if (!skipEditLoadRef.current) {
+          const saved = key ? store.attendance?.[key] : null;
+          if (saved?.length) {
+            const map = {};
+            saved.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : { alpha: true }; });
+            setAnswers(map);
+          } else if (!isGuest && supabaseReady && online && occ.id && !String(occ.id).startsWith('virt-')) {
+            try {
+              const attDb = await withTimeout(supabase.from('attendance').select('*').eq('occurrence_id', occ.id), 15000);
+              if ((attDb.data || []).length > 0) {
+                const map = {};
+                attDb.data.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : { alpha: true }; });
+                setAnswers(map);
+                setStore((p) => ({ ...p, attendance: { ...p.attendance, [occ.id]: attDb.data } }));
+              }
+            } catch { /* abaikan, gunakan state lokal */ }
+          }
+          await hydrateEditMats(occ);
+        } else {
+          skipEditLoadRef.current = false;
         }
       } else if (!submitted && key) {
         idbGet(`draft-${account.id}-${key}`, null).then((d) => { if (d?.answers) setAnswers(d.answers); });
@@ -635,10 +711,99 @@ export default function Absensi() {
     setQrScanOpen(true);
   }
 
-  function onQrDecoded(rawText) {
+  function mergeAttendanceRec(key, rec) {
+    if (!key) return;
+    setStore((p) => {
+      const cur = ((p.attendance || {})[key] || []).filter((r) => r.member_id !== rec.member_id);
+      const next = { ...p, attendance: { ...p.attendance, [key]: [...cur, rec] } };
+      saveSnapshot(account.id, {
+        members: next.members, absenceTypes: next.absenceTypes, schedules: next.schedules,
+        lockHours: next.lockHours, speakers: next.speakers, hadith: next.hadith, free: next.free,
+        specialTypes: next.specialTypes, occurrences: [], attendance: next.attendance, holidays: next.holidays,
+      });
+      return next;
+    });
+  }
+
+  function existingQrStatus(memberId) {
+    const a = answers[memberId] || {};
+    if (a.hadir) return { st: 'PRESENT', src: 'form' };
+    if (a.izin) return { st: 'PERMITTED', absence: a.izin, src: 'form' };
+    if (a.alpha) return { st: 'ALPHA', src: 'form' };
+    const keys = [occ?.id, occ?.localKey].filter(Boolean);
+    for (const k of keys) {
+      const rec = ((storeRef.current?.attendance || {})[k] || []).find((r) => r.member_id === memberId);
+      if (rec) return { st: rec.status, absence: rec.absence_name_snapshot, src: 'saved' };
+    }
+    return null;
+  }
+
+  async function qrDirectSave(member) {
+    if (!occ) return 'dberror';
+    const row = { member_id: member.id, member_name: displayNameOf(member), status: 'PRESENT', absence: null };
+    const key = occKeyOf(occ);
+    const rec = { member_id: row.member_id, member_name_snapshot: row.member_name, status: row.status, absence_name_snapshot: row.absence };
+    try {
+      if (isGuest || !supabaseReady) {
+        mergeAttendanceRec(occ.id, rec);
+        const local = await idbGet('guest-data', null);
+        if (local) {
+          const cur = ((local.attendance || {})[occ.id] || []).filter((r) => r.member_id !== rec.member_id);
+          await idbSet('guest-data', { ...local, attendance: { ...(local.attendance || {}), [occ.id]: [...cur, rec] } });
+        }
+      } else if (!online) {
+        await enqueue(createAttendanceOp(account.id, occDescriptor(), [row], buildMats()));
+        mergeAttendanceRec(key, rec);
+        toast('Tersimpan di perangkat. Akan dikirim otomatis saat koneksi kembali.');
+      } else {
+        try {
+          const { data: dbOcc, error: occErr } = await withTimeout(supabase.from('schedule_occurrences').upsert({
+            account_id: account.id,
+            recurring_schedule_id: occ.recurring_schedule_id,
+            occurrence_date: occ.occurrence_date,
+            occurrence_time: occ.occurrence_time,
+            occurrence_end_time: occ.occurrence_end_time || null,
+            day_name: occ.day_name,
+          }, { onConflict: 'account_id,recurring_schedule_id,occurrence_date' }).select().single(), 20000);
+          if (occErr) throw occErr;
+          const { error } = await withTimeout(supabase.from('attendance').upsert({ account_id: account.id, occurrence_id: dbOcc.id, member_id: row.member_id, status: row.status, absence_name_snapshot: row.absence, member_name_snapshot: row.member_name }, { onConflict: 'account_id,occurrence_id,member_id' }), 30000);
+          if (error) throw error;
+          mergeAttendanceRec(dbOcc.id, rec);
+          if (tableVisible) await loadTable();
+        } catch (e) {
+          if (isNetErr(e)) {
+            await enqueue(createAttendanceOp(account.id, occDescriptor(), [row], buildMats()));
+            mergeAttendanceRec(key, rec);
+            toast('Koneksi terputus. Data tersimpan di perangkat dan akan dikirim otomatis.');
+          } else throw e;
+        }
+      }
+      setHadir(member.id, true);
+      if (!editing) { skipEditLoadRef.current = true; setEditing(true); }
+      return 'saved';
+    } catch {
+      return 'dberror';
+    }
+  }
+
+  async function saveQrPresent(member) {
+    if (!member || qrSaving) return;
+    setQrSaving(true);
+    const res = await qrDirectSave(member);
+    setQrSaving(false);
+    if (res === 'saved') {
+      setQrResult({ kind: 'marked', member });
+      toast(`✓ ${displayNameOf(member)} berhasil diabsen`);
+    } else {
+      setQrResult({ kind: 'dberror', member });
+    }
+  }
+
+  async function onQrDecoded(rawText) {
     const raw = String(rawText || '').trim();
     setQrScanOpen(false);
     if (!raw) { setQrResult({ kind: 'invalid' }); return; }
+    if (qrSaving) return;
     const list = storeRef.current?.members || [];
     const found = list.find((m) => (m.qr_identifier || '') !== '' && m.qr_identifier === raw);
     if (!found) {
@@ -650,16 +815,15 @@ export default function Absensi() {
       setQrResult({ kind: 'inactive', member: found });
       return;
     }
-    const cur = answers[found.id] || {};
-    if (cur.hadir) { setQrResult({ kind: 'already', member: found }); return; }
-    if (cur.izin) { setQrResult({ kind: 'confirm-izin', member: found, izinName: cur.izin }); return; }
-    setHadir(found.id, true);
-    setQrResult({ kind: 'marked', member: found });
+    const ex = existingQrStatus(found.id);
+    if (!ex) { await saveQrPresent(found); return; }
+    if (ex.st === 'PRESENT') { setQrResult({ kind: 'already', member: found }); return; }
+    if (ex.st === 'PERMITTED') { setQrResult({ kind: 'confirm-izin', member: found, izinName: ex.absence || '-' }); return; }
+    await saveQrPresent(found);
   }
 
   function confirmQrIzinToHadir() {
-    if (qrResult?.member) setHadir(qrResult.member.id, true);
-    setQrResult(qrResult?.member ? { kind: 'marked', member: qrResult.member } : null);
+    if (qrResult?.member) saveQrPresent(qrResult.member);
   }
 
   const windowOpen = occ ? isWithinWindow(occ.occurrence_date, occ.occurrence_time) : false;
@@ -917,12 +1081,13 @@ export default function Absensi() {
         const recs = rows.map((r) => ({ member_id: r.member_id, member_name_snapshot: r.member_name, status: r.status, absence_name_snapshot: r.absence }));
         setStore((p) => ({ ...p, attendance: { ...p.attendance, [key]: recs } }));
         const local = await idbGet('guest-data', null);
-        if (local) await idbSet('guest-data', { ...local, attendance: { ...(local.attendance || {}), [key]: recs } });
+        if (local) await idbSet('guest-data', { ...local, attendance: { ...(local.attendance || {}), [key]: recs }, mats: { ...(local.mats || {}), [key]: clientMatsToServer(mats, key) } });
       } else if (!online) {
         const key = occKeyOf(occ);
         const recs = rows.map((r) => ({ member_id: r.member_id, member_name_snapshot: r.member_name, status: r.status, absence_name_snapshot: r.absence }));
         await enqueue(createAttendanceOp(account.id, occDescriptor(), rows, mats));
         await persistLocalOverlay(key, recs);
+        await idbSet(`mats-${account.id}-${key}`, clientMatsToServer(mats, key));
         toast('Tersimpan di perangkat. Akan dikirim otomatis saat koneksi kembali.');
       } else {
         try {
@@ -941,6 +1106,14 @@ export default function Absensi() {
               if (error) throw error;
             }
           })(), 30000);
+          const activeKinds = mats.map((m) => m.kind);
+          const { data: existingMats } = await withTimeout(supabase.from('materials').select('id,kind').eq('occurrence_id', dbOcc.id), 15000);
+          const staleIds = (existingMats || []).filter((r) => !activeKinds.includes(r.kind)).map((r) => r.id);
+          if (staleIds.length) {
+            const { error: delErr } = await withTimeout(supabase.from('materials').delete().in('id', staleIds), 15000);
+            if (delErr) throw delErr;
+          }
+          const savedMatRows = [];
           await withTimeout((async () => {
             for (const mm of mats) {
               const payload = { id: mm.clientId, account_id: account.id, occurrence_id: dbOcc.id, kind: mm.kind };
@@ -950,8 +1123,11 @@ export default function Absensi() {
             if (mm.kind === 'FREE') { payload.free_activity_name_snapshot = mm.activity; payload.speaker_name_snapshot = mm.speaker; }
             const { error } = await supabase.from('materials').upsert(payload, { onConflict: 'id' });
             if (error) throw error;
+            savedMatRows.push(payload);
             }
           })(), 30000);
+          await idbSet(`mats-${account.id}-${dbOcc.id}`, savedMatRows);
+          if (occKeyOf(occ) !== dbOcc.id) await idbSet(`mats-${account.id}-${occKeyOf(occ)}`, savedMatRows);
           try {
             await supabase.from('audit_logs').insert({ account_id: account.id, action: submitted ? 'UPDATE_ATTENDANCE' : 'CREATE_ATTENDANCE', entity_type: 'attendance', entity_id: dbOcc.id, new_data: { count: rows.length } });
           } catch { /* audit best-effort */ }
@@ -1046,8 +1222,7 @@ export default function Absensi() {
     { key: 'nasehat', title: 'Nasehat', desc: 'Penyampai nasehat', masters: ['speakers'] },
     { key: 'free', title: 'Materi / Kegiatan Bebas', desc: 'Kegiatan dan penanggung jawab', masters: ['free', 'speakers'] },
   ];
-  const activeMats = MAT_DEFS.filter((d) => mat[d.key]);
-  const inactiveMats = MAT_DEFS.filter((d) => !mat[d.key]);
+  const activeMatCount = MAT_DEFS.filter((d) => mat[d.key]).length;
 
   function sectionHasData(key) {
     if (key === 'quran') return Boolean(mat.surah || mat.ayat || mat.pemateriQ);
@@ -1068,12 +1243,72 @@ export default function Absensi() {
     return '';
   }
 
-  function activateSection(key) {
+  function enableSection(key) {
     const def = MAT_DEFS.find((d) => d.key === key);
     setMat((p) => ({ ...p, [key]: true }));
-    setCollapsedSecs((p) => ({ ...p, [key]: false }));
     if (def) ensureMasters(def.masters);
-    if (inactiveMats.length <= 1) setPickerOpen(false);
+  }
+
+  function matFields(key) {
+    if (key === 'quran') {
+      return (
+        <>
+          <div className="row cols-3">
+            <label className="field"><span>Nomor Surat</span><input className="input" inputMode="numeric" value={mat.surah} onChange={(e) => setMat({ ...mat, surah: e.target.value })} /></label>
+            <label className="field"><span>Surat</span><input className="input" value={surah || ''} readOnly placeholder="Nama surat muncul otomatis" /></label>
+            <label className="field"><span>Ayat</span><input className="input" value={mat.ayat} onChange={(e) => setMat({ ...mat, ayat: e.target.value })} placeholder="1-10" /></label>
+          </div>
+          {mat.surah && !surah && <p className="field-error">Nomor surat harus berada di antara 1-114.</p>}
+          <label className="field"><span>Pemateri</span>
+            <CustomSelect value={mat.pemateriQ} ariaLabel="Pemateri Al-Quran" placeholder="Pilih pemateri"
+              options={[{ value: '', label: 'Pilih pemateri' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
+              onChange={(v) => setMat({ ...mat, pemateriQ: v })} />
+          </label>
+        </>
+      );
+    }
+    if (key === 'hadith') {
+      return (
+        <>
+          <div className="row cols-2">
+            <label className="field"><span>Hadist</span>
+              <CustomSelect value={mat.hadithId} ariaLabel="Pilih hadist" placeholder="Pilih hadist"
+                options={[{ value: '', label: 'Pilih hadist' }, ...(store.hadith || []).map((h) => ({ value: h.name, label: h.name }))]}
+                onChange={(v) => setMat({ ...mat, hadithId: v })} />
+            </label>
+            <label className="field"><span>Halaman</span><input className="input" value={mat.halaman} onChange={(e) => setMat({ ...mat, halaman: e.target.value })} /></label>
+          </div>
+          <label className="field"><span>Pemateri</span>
+            <CustomSelect value={mat.pemateriH} ariaLabel="Pemateri Hadist" placeholder="Pilih pemateri"
+              options={[{ value: '', label: 'Pilih pemateri' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
+              onChange={(v) => setMat({ ...mat, pemateriH: v })} />
+          </label>
+        </>
+      );
+    }
+    if (key === 'nasehat') {
+      return (
+        <label className="field"><span>Penyampai nasehat</span>
+          <CustomSelect value={mat.nasehatBy} ariaLabel="Penyampai nasehat" placeholder="Pilih penyampai"
+            options={[{ value: '', label: 'Pilih penyampai' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
+            onChange={(v) => setMat({ ...mat, nasehatBy: v })} />
+        </label>
+      );
+    }
+    return (
+      <div className="row cols-2">
+        <label className="field"><span>Kegiatan</span>
+          <CustomSelect value={mat.freeId} ariaLabel="Pilih kegiatan" placeholder="Pilih kegiatan"
+            options={[{ value: '', label: 'Pilih kegiatan' }, ...(store.free || []).map((f) => ({ value: f.name, label: f.name }))]}
+            onChange={(v) => setMat({ ...mat, freeId: v })} />
+        </label>
+        <label className="field"><span>Penanggung jawab</span>
+          <CustomSelect value={mat.freeBy} ariaLabel="Pilih penanggung jawab" placeholder="Pilih penanggung jawab"
+            options={[{ value: '', label: 'Pilih penanggung jawab' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
+            onChange={(v) => setMat({ ...mat, freeBy: v })} />
+        </label>
+      </div>
+    );
   }
 
   function deactivateSection(key, title) {
@@ -1083,9 +1318,7 @@ export default function Absensi() {
   }
 
   function resetMaterials() {
-    setMat({ ...MAT_OFF, surah: '', ayat: '', pemateriQ: '', hadithId: '', halaman: '', pemateriH: '', nasehatBy: '', freeId: '', freeBy: '' });
-    setCollapsedSecs({ quran: false, hadith: false, nasehat: false, free: false });
-    setPickerOpen(false);
+    setMat(MAT_EMPTY());
   }
 
   async function onSpecialCreated(id, localEv) {
@@ -1252,7 +1485,7 @@ export default function Absensi() {
                 onClose={() => setQrScanOpen(false)}
               />
             )}
-            {qrResult && <QrResultPanel result={qrResult} onScanAgain={openQrScan} onDone={() => setQrResult(null)} onConfirmIzin={confirmQrIzinToHadir} onRegister={() => navigate('/admin/anggota')} />}
+            {qrResult && <QrResultPanel result={qrResult} onScanAgain={openQrScan} onDone={() => setQrResult(null)} onConfirmIzin={confirmQrIzinToHadir} onRegister={() => navigate('/admin/anggota')} onRetry={() => qrResult?.member && saveQrPresent(qrResult.member)} saving={qrSaving} />}
             <div className="member-groups">
               {renderGroup('LAKI-LAKI', 'male', males, maleOpen, setMaleOpen)}
               {renderGroup('PEREMPUAN', 'female', females, femaleOpen, setFemaleOpen)}
@@ -1262,194 +1495,35 @@ export default function Absensi() {
               <div className="material-group-head">
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <h3 style={{ margin: 0 }}>Materi Pengajian</h3>
-                  {activeMats.length > 0 && <span className="member-count">{activeMats.length} aktif</span>}
+                  {activeMatCount > 0 && <span className="member-count">{activeMatCount} aktif</span>}
                 </div>
-                {inactiveMats.length > 0 && activeMats.length > 0 && !pickerOpen && (
-                  <button type="button" className="collapse-btn" onClick={() => setPickerOpen(true)} aria-label="Tambah materi lain">
-                    <PlusIcon /> <span>Tambah</span>
-                  </button>
-                )}
               </div>
-              {activeMats.length === 0 && !pickerOpen && (
-                <div className="material-empty">
-                  <p className="card-desc" style={{ marginBottom: 12 }}>Belum ada materi yang dipilih untuk pengajian ini.</p>
-                  <button type="button" className="btn" onClick={() => setPickerOpen(true)}><PlusIcon /> Tambah Materi</button>
-                </div>
-              )}
-              {pickerOpen && inactiveMats.length > 0 && (
-                <div className="material-picker" role="group" aria-label="Pilih materi">
-                  {inactiveMats.map((d) => (
-                    <div className="material-pick-row" key={d.key}>
-                      <div>
-                        <strong>{d.title}</strong>
-                        <div className="hint">{d.desc}</div>
-                      </div>
-                      <button type="button" className="btn" style={{ minHeight: 40 }} onClick={() => activateSection(d.key)} aria-label={`Tambah materi ${d.title}`}>
+              {MAT_DEFS.map((d) => (
+                <section className="material-card" key={d.key} aria-label={d.title}>
+                  <div className="material-sec-head">
+                    <div>
+                      <strong>{d.title}</strong>
+                      <div className="hint">{mat[d.key] ? matSummary(d.key) : d.desc}</div>
+                    </div>
+                    {mat[d.key] ? (
+                      <button type="button" className="collapse-btn" onClick={() => deactivateSection(d.key, d.title)} aria-label={`Nonaktifkan ${d.title}`}>
+                        <span>− Nonaktif</span>
+                      </button>
+                    ) : (
+                      <button type="button" className="btn" style={{ minHeight: 40 }} onClick={() => enableSection(d.key)} aria-label={`Tambah ${d.title}`}>
                         <PlusIcon /> Tambah
                       </button>
-                    </div>
-                  ))}
-                  <button type="button" className="btn btn-ghost btn-block" style={{ marginTop: 8 }} onClick={() => setPickerOpen(false)}>Tutup</button>
-                </div>
-              )}
-                  {mat.quran && (
-                  <div className="material-card">
-                    <div className="material-sec-head">
-                      <div>
-                        <strong>Al-Quran</strong>
-                        <div className="hint">{matSummary('quran')}</div>
-                      </div>
-                      <div className="material-sec-actions">
-                        <button
-                          type="button"
-                          className="collapse-btn"
-                          aria-expanded={!collapsedSecs.quran}
-                          aria-label={collapsedSecs.quran ? 'Tampilkan materi Al-Quran' : 'Sembunyikan materi Al-Quran'}
-                          onClick={() => setCollapsedSecs((p) => ({ ...p, quran: !p.quran }))}
-                        >
-                          {collapsedSecs.quran ? <ChevronDownIcon /> : <ChevronUpIcon />}
-                          <span>{collapsedSecs.quran ? 'Tampilkan' : 'Sembunyikan'}</span>
-                        </button>
-                        <button type="button" className="icon-btn danger" aria-label="Hapus materi Al-Quran" title="Hapus materi Al-Quran" onClick={() => deactivateSection('quran', 'Al-Quran')}>
-                          <TrashIcon />
-                        </button>
-                      </div>
-                    </div>
-                    {!collapsedSecs.quran && (
-                      <div className="material-card-body">
-                        <div className="row cols-3">
-                          <label className="field"><span>Nomor Surat</span><input className="input" inputMode="numeric" value={mat.surah} onChange={(e) => setMat({ ...mat, surah: e.target.value })} /></label>
-                          <label className="field"><span>Surat</span><input className="input" value={surah || ''} readOnly placeholder="Nama surat muncul otomatis" /></label>
-                          <label className="field"><span>Ayat</span><input className="input" value={mat.ayat} onChange={(e) => setMat({ ...mat, ayat: e.target.value })} placeholder="1-10" /></label>
-                        </div>
-                        {mat.surah && !surah && <p className="field-error">Nomor surat harus berada di antara 1-114.</p>}
-                        <label className="field"><span>Pemateri</span>
-                          <CustomSelect value={mat.pemateriQ} ariaLabel="Pemateri Al-Quran" placeholder="Pilih pemateri"
-                            options={[{ value: '', label: 'Pilih pemateri' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
-                            onChange={(v) => setMat({ ...mat, pemateriQ: v })} />
-                        </label>
-                      </div>
                     )}
                   </div>
-                  )}
-                  {mat.hadith && (
-                  <div className="material-card">
-                    <div className="material-sec-head">
-                      <div>
-                        <strong>Hadist</strong>
-                        <div className="hint">{matSummary('hadith')}</div>
-                      </div>
-                      <div className="material-sec-actions">
-                        <button
-                          type="button"
-                          className="collapse-btn"
-                          aria-expanded={!collapsedSecs.hadith}
-                          aria-label={collapsedSecs.hadith ? 'Tampilkan materi Hadist' : 'Sembunyikan materi Hadist'}
-                          onClick={() => setCollapsedSecs((p) => ({ ...p, hadith: !p.hadith }))}
-                        >
-                          {collapsedSecs.hadith ? <ChevronDownIcon /> : <ChevronUpIcon />}
-                          <span>{collapsedSecs.hadith ? 'Tampilkan' : 'Sembunyikan'}</span>
-                        </button>
-                        <button type="button" className="icon-btn danger" aria-label="Hapus materi Hadist" title="Hapus materi Hadist" onClick={() => deactivateSection('hadith', 'Hadist')}>
-                          <TrashIcon />
-                        </button>
-                      </div>
+                  {mat[d.key] && (
+                    <div className="material-card-body">
+                      {matFields(d.key)}
                     </div>
-                    {!collapsedSecs.hadith && (
-                      <div className="material-card-body">
-                        <div className="row cols-2">
-                          <label className="field"><span>Hadist</span>
-                            <CustomSelect value={mat.hadithId} ariaLabel="Pilih hadist" placeholder="Pilih hadist"
-                              options={[{ value: '', label: 'Pilih hadist' }, ...(store.hadith || []).map((h) => ({ value: h.name, label: h.name }))]}
-                              onChange={(v) => setMat({ ...mat, hadithId: v })} />
-                          </label>
-                          <label className="field"><span>Halaman</span><input className="input" value={mat.halaman} onChange={(e) => setMat({ ...mat, halaman: e.target.value })} /></label>
-                        </div>
-                        <label className="field"><span>Pemateri</span>
-                          <CustomSelect value={mat.pemateriH} ariaLabel="Pemateri Hadist" placeholder="Pilih pemateri"
-                            options={[{ value: '', label: 'Pilih pemateri' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
-                            onChange={(v) => setMat({ ...mat, pemateriH: v })} />
-                        </label>
-                      </div>
-                    )}
-                  </div>
                   )}
-                  {mat.nasehat && (
-                  <div className="material-card">
-                    <div className="material-sec-head">
-                      <div>
-                        <strong>Nasehat</strong>
-                        <div className="hint">{matSummary('nasehat')}</div>
-                      </div>
-                      <div className="material-sec-actions">
-                        <button
-                          type="button"
-                          className="collapse-btn"
-                          aria-expanded={!collapsedSecs.nasehat}
-                          aria-label={collapsedSecs.nasehat ? 'Tampilkan materi Nasehat' : 'Sembunyikan materi Nasehat'}
-                          onClick={() => setCollapsedSecs((p) => ({ ...p, nasehat: !p.nasehat }))}
-                        >
-                          {collapsedSecs.nasehat ? <ChevronDownIcon /> : <ChevronUpIcon />}
-                          <span>{collapsedSecs.nasehat ? 'Tampilkan' : 'Sembunyikan'}</span>
-                        </button>
-                        <button type="button" className="icon-btn danger" aria-label="Hapus materi Nasehat" title="Hapus materi Nasehat" onClick={() => deactivateSection('nasehat', 'Nasehat')}>
-                          <TrashIcon />
-                        </button>
-                      </div>
-                    </div>
-                    {!collapsedSecs.nasehat && (
-                      <div className="material-card-body">
-                        <label className="field"><span>Penyampai nasehat</span>
-                          <CustomSelect value={mat.nasehatBy} ariaLabel="Penyampai nasehat" placeholder="Pilih penyampai"
-                            options={[{ value: '', label: 'Pilih penyampai' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
-                            onChange={(v) => setMat({ ...mat, nasehatBy: v })} />
-                        </label>
-                      </div>
-                    )}
-                  </div>
-                  )}
-                  {mat.free && (
-                  <div className="material-card">
-                    <div className="material-sec-head">
-                      <div>
-                        <strong>Materi / Kegiatan Bebas</strong>
-                        <div className="hint">{matSummary('free')}</div>
-                      </div>
-                      <div className="material-sec-actions">
-                        <button
-                          type="button"
-                          className="collapse-btn"
-                          aria-expanded={!collapsedSecs.free}
-                          aria-label={collapsedSecs.free ? 'Tampilkan materi bebas' : 'Sembunyikan materi bebas'}
-                          onClick={() => setCollapsedSecs((p) => ({ ...p, free: !p.free }))}
-                        >
-                          {collapsedSecs.free ? <ChevronDownIcon /> : <ChevronUpIcon />}
-                          <span>{collapsedSecs.free ? 'Tampilkan' : 'Sembunyikan'}</span>
-                        </button>
-                        <button type="button" className="icon-btn danger" aria-label="Hapus materi bebas" title="Hapus materi bebas" onClick={() => deactivateSection('free', 'Materi/Kegiatan Bebas')}>
-                          <TrashIcon />
-                        </button>
-                      </div>
-                    </div>
-                    {!collapsedSecs.free && (
-                      <div className="material-card-body">
-                        <div className="row cols-2">
-                          <label className="field"><span>Kegiatan</span>
-                            <CustomSelect value={mat.freeId} ariaLabel="Pilih kegiatan" placeholder="Pilih kegiatan"
-                              options={[{ value: '', label: 'Pilih kegiatan' }, ...(store.free || []).map((f) => ({ value: f.name, label: f.name }))]}
-                              onChange={(v) => setMat({ ...mat, freeId: v })} />
-                          </label>
-                          <label className="field"><span>Penanggung jawab</span>
-                            <CustomSelect value={mat.freeBy} ariaLabel="Pilih penanggung jawab" placeholder="Pilih penanggung jawab"
-                              options={[{ value: '', label: 'Pilih penanggung jawab' }, ...(store.speakers || []).map((s) => ({ value: s.name, label: s.name }))]}
-                              onChange={(v) => setMat({ ...mat, freeBy: v })} />
-                          </label>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  )}
+                </section>
+              ))}
             </div>
+
 
             <div className="actions">
               <button className="btn btn-danger" onClick={() => { if (window.confirm('Hapus draf absensi ini? Semua jawaban sementara dan isian materi pada form jadwal ini akan dihapus dan tidak bisa dikembalikan.')) { setAnswers({}); resetMaterials(); } }}>Reset Form</button>

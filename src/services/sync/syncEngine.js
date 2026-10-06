@@ -58,6 +58,16 @@ export async function replayAttendanceOp(op, { force = false } = {}) {
     }, { onConflict: 'account_id,occurrence_id,member_id' }), 30000);
     if (error) throw error;
   }
+  const activeKinds = (payload.mats || []).map((m) => m.kind);
+  const { data: existingMats, error: matsSelErr } = await withTimeout(
+    supabase.from('materials').select('id,kind').eq('occurrence_id', dbOcc.id), 20000,
+  );
+  if (matsSelErr) throw matsSelErr;
+  const staleIds = (existingMats || []).filter((r) => !activeKinds.includes(r.kind)).map((r) => r.id);
+  if (staleIds.length) {
+    const { error: matsDelErr } = await withTimeout(supabase.from('materials').delete().in('id', staleIds), 20000);
+    if (matsDelErr) throw matsDelErr;
+  }
   for (const m of payload.mats || []) {
     const item = { id: m.clientId, account_id: accountId, occurrence_id: dbOcc.id, kind: m.kind };
     if (m.kind === 'QURAN') {

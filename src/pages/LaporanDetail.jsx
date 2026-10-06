@@ -666,9 +666,9 @@ export default function LaporanDetail() {
     setExporting(true);
     try {
       const isKhusus = detail.type === 'khusus';
-      const title = isKhusus
-        ? `${detail.occ?.event_type_snapshot || 'Khusus'}-${detail.occ?.event_date || ''}`
-        : `Rutin-${detail.occ?.occurrence_date || ''}`;
+      const occ = isKhusus
+        ? { kind: 'khusus', eventName: detail.occ?.event_type_snapshot || 'Pengajian Khusus', dateISO: detail.occ?.event_date || '' }
+        : { kind: 'rutin', eventName: '', dateISO: detail.occ?.occurrence_date || '' };
       const info = isKhusus
         ? [
             ['Jenis', 'Pengajian Khusus'],
@@ -686,7 +686,7 @@ export default function LaporanDetail() {
           ];
       const want = (k) => exportSel[k];
       await exportOccurrenceWorkbook({
-        title: `Detail-${title}`.replace(/\s+/g, '-'),
+        occ,
         info,
         summary: want('ringkas') ? [stats.total, stats.hadir, `${stats.pctHadir}%`, stats.izin, `${stats.pctIzin}%`, stats.alpha, `${stats.pctAlpha}%`] : null,
         detail: want('detail') ? stats.table.map((t) => [t.m.full_name, t.m.nickname, t.m.gender === 'MALE' ? 'Laki-laki' : t.m.gender === 'FEMALE' ? 'Perempuan' : '-', t.m.member_category || '-', t.st, t.izinName]) : null,
