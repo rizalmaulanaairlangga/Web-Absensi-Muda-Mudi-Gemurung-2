@@ -8,7 +8,7 @@ import MemberRow from './MemberRow.jsx';
 import { dayName, dayOfWeek, formatID, toISODate, todayJakarta } from '../lib/dates.js';
 import { loadMastersCache, saveMastersCache } from '../lib/masters.js';
 import { newOpId, createSpecialEventOp, createSpecialAttendanceOp } from '../services/sync/syncQueue.js';
-import { idbGet, idbSet } from '../lib/idb.js';
+import { idbGet, idbSet, idbDel } from '../lib/idb.js';
 
 function timeRange(start, end) {
   const s = String(start || '').slice(0, 5);
@@ -305,6 +305,7 @@ export function SpecialDetail({ eventId, localEvent, members, absenceTypes, onBa
   const [rows, setRows] = React.useState(null);
   const [editing, setEditing] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
+  const draftKey = account ? `draft-${account.id}-khusus-${eventId}` : null;
 
   const eligible = React.useMemo(() => {
     if (!event) return [];
@@ -351,27 +352,38 @@ export function SpecialDetail({ eventId, localEvent, members, absenceTypes, onBa
   React.useEffect(() => {
     (async () => {
       if (!event) return;
+      let draftAnswers = null;
+      try {
+        const d = draftKey ? await idbGet(draftKey, null) : null;
+        if (d && Object.keys(d.answers || {}).length) draftAnswers = d.answers;
+      } catch { /* abaikan */ }
       if (!online || !supabaseReady) {
         const snap = await loadSnapshot(account.id);
         const saved = snap?.specialAtt?.[event.id];
         if (saved?.length) {
           setRows(saved);
-          const map = {};
-          saved.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : { alpha: true }; });
-          setAnswers(map);
-          setEditing(false);
-        }
+          if (draftAnswers) { setAnswers(draftAnswers); setEditing(true); }
+          else {
+            const map = {};
+            saved.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : { alpha: true }; });
+            setAnswers(map);
+            setEditing(false);
+          }
+        } else if (draftAnswers) { setAnswers(draftAnswers); setEditing(true); }
         return;
       }
       try {
         const { data } = await withTimeout(supabase.from('special_attendance').select('*').eq('special_event_id', event.id), 20000);
         if ((data || []).length) {
           setRows(data);
-          const map = {};
-          data.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : { alpha: true }; });
-          setAnswers(map);
-          setEditing(false);
-        }
+          if (draftAnswers) { setAnswers(draftAnswers); setEditing(true); }
+          else {
+            const map = {};
+            data.forEach((a) => { map[a.member_id] = a.status === 'PRESENT' ? { hadir: true } : a.status === 'PERMITTED' ? { izin: a.absence_name_snapshot || '' } : { alpha: true }; });
+            setAnswers(map);
+            setEditing(false);
+          }
+        } else if (draftAnswers) { setAnswers(draftAnswers); setEditing(true); }
       } catch { /* abaikan */ }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -380,6 +392,16 @@ export function SpecialDetail({ eventId, localEvent, members, absenceTypes, onBa
   function setHadir(id, v) { setAnswers((p) => ({ ...p, [id]: v ? { hadir: true } : {} })); }
   function setIzin(id, v) { setAnswers((p) => ({ ...p, [id]: v ? { izin: v } : {} })); }
   function toggleAlpha(id) { setAnswers((p) => ({ ...p, [id]: p[id]?.alpha ? {} : { alpha: true } })); }
+
+  React.useEffect(() => {
+    if (!event || !draftKey) return;
+    if (!Object.keys(answers).length) {
+      idbDel(draftKey).catch(() => {});
+      return;
+    }
+    idbSet(draftKey, { answers, kind: 'khusus', id: eventId, updatedAt: Date.now() }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [answers, event?.id]);
 
   async function onSave() {
     if (!event) return;
@@ -398,6 +420,8 @@ export function SpecialDetail({ eventId, localEvent, members, absenceTypes, onBa
         } catch { /* abaikan */ }
         setRows(recs);
         setEditing(false);
+        try { await idbDel(draftKey); } catch { /* abaikan */ }
+        setAnswers({});
         toast('Tersimpan di perangkat. Akan dikirim otomatis saat koneksi kembali.');
         onChanged?.();
       } else {
@@ -417,6 +441,8 @@ export function SpecialDetail({ eventId, localEvent, members, absenceTypes, onBa
           const recs = list.map((r) => ({ member_id: r.member_id, member_name_snapshot: r.member_name, status: r.status, absence_name_snapshot: r.absence }));
           setRows(recs);
           setEditing(false);
+          try { await idbDel(draftKey); } catch { /* abaikan */ }
+          setAnswers({});
           toast('Absensi pengajian khusus berhasil disimpan.');
           try {
             const snap = (await loadSnapshot(account.id)) || {};

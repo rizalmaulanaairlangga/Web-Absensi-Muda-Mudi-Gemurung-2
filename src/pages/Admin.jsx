@@ -4,7 +4,30 @@ import { useApp } from '../lib/store.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { idbGet, idbSet } from '../lib/idb.js';
 import { DEFAULT_ABSENCE, DEFAULT_STATUS, DEFAULT_HADITH, DEFAULT_FREE, DEFAULT_SPEAKERS, DEFAULT_SPECIAL_TYPES, MEMBER_CATEGORIES } from '../lib/seed.js';
-import { Modal, Empty, PlusIcon, TrashIcon, PencilIcon, ClockIcon, CustomSelect, UsersIcon, BookOpenIcon, LayersIcon, ArrowLeftIcon, StatusBadge } from '../components/ui.jsx';
+import { Modal, Empty, PlusIcon, TrashIcon, PencilIcon, ClockIcon, CustomSelect, UsersIcon, BookOpenIcon, LayersIcon, ArrowLeftIcon, StatusBadge, FilterIcon } from '../components/ui.jsx';
+
+function compareMembers(a, b) {
+  const ga = a.gender === 'MALE' ? 0 : 1;
+  const gb = b.gender === 'MALE' ? 0 : 1;
+  if (ga !== gb) return ga - gb;
+  const c = String(a.full_name || '').trim().localeCompare(String(b.full_name || '').trim(), 'id', { sensitivity: 'base', numeric: true });
+  if (c !== 0) return c;
+  return String(a.id).localeCompare(String(b.id));
+}
+
+function pageItems(cur, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const nums = [...new Set([1, total, cur - 1, cur, cur + 1].filter((n) => n >= 1 && n <= total))].sort((a, b) => a - b);
+  const out = [];
+  nums.forEach((n, i) => {
+    if (i > 0 && n - nums[i - 1] > 1) out.push('…');
+    out.push(n);
+  });
+  return out;
+}
+
+const PER_PAGE_OPTS = [5, 10, 25, 50, 100];
+const DEFAULT_FILTERS = { q: '', fGender: 'all', fCat: 'all', fStatus: 'all', fActive: 'all', fAge: 'all' };
 import { formatDateShortID, formatID } from '../lib/dates.js';
 import { DateField, TimeField } from '../components/fields.jsx';
 
@@ -163,7 +186,7 @@ function MemberModal({ memberModal, memberForm, setMemberForm, statuses, onClose
 }
 
 export default function Admin() {
-  const { account, isGuest, supabaseReady, toast, loadSnapshot, online } = useApp();
+  const { account, isGuest, supabaseReady, toast, loadSnapshot, online, confirmDialog } = useApp();
   const navigate = useNavigate();
   const location = useLocation();
   const view = location.pathname.endsWith('/anggota')
@@ -178,16 +201,23 @@ export default function Admin() {
   }
   const [members, setMembers] = useState([]);
   const [schedules, setSchedules] = useState([]);
-  const [lockHours, setLockHours] = useState(24);
   const [memberModal, setMemberModal] = useState(null);
   const [memberForm, setMemberForm] = useState({ full_name: '', nickname: '', gender: 'MALE', status: '', category: '', birth_date: '', active: true, qr: '' });
   const [q, setQ] = useState('');
-  const [showFilters, setShowFilters] = useState(false);
+  const [showFilterModal, setShowFilterModal] = useState(false);
   const [fGender, setFGender] = useState('all');
   const [fCat, setFCat] = useState('all');
   const [fStatus, setFStatus] = useState('all');
   const [fActive, setFActive] = useState('all');
   const [fAge, setFAge] = useState('all');
+  const [dQ, setDQ] = useState('');
+  const [dFGender, setDFGender] = useState('all');
+  const [dFCat, setDFCat] = useState('all');
+  const [dFStatus, setDFStatus] = useState('all');
+  const [dFActive, setDFActive] = useState('all');
+  const [dFAge, setDFAge] = useState('all');
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(5);
 
   const [absence, setAbsence] = useMaster(account, 'absence', DEFAULT_ABSENCE, 'absence_types');
   const [statuses, setStatuses] = useMaster(account, 'status', DEFAULT_STATUS, 'member_statuses');
@@ -207,7 +237,6 @@ export default function Admin() {
         const local = await idbGet('guest-data', null);
         setMembers(local?.members || []);
         setSchedules(local?.schedules || []);
-        setLockHours(local?.lockHours || 24);
         return;
       }
       const [m, s, st] = await Promise.all([
@@ -217,7 +246,6 @@ export default function Admin() {
       ]);
       setMembers(m.data || []);
       setSchedules((s.data || []).map((x) => ({ id: x.id, day_of_week: x.day_of_week, event_time: String(x.event_time).slice(0, 5), end_time: x.end_time ? String(x.end_time).slice(0, 5) : null, active: x.active })));
-      if (st.data) setLockHours(st.data.lock_duration_hours);
     })();
   }, [account?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -275,7 +303,8 @@ export default function Admin() {
     setter((p) => p.map((x) => x.id === id ? { ...x, name } : x));
   }
   async function delMaster(table, setter, it, warn) {
-    if (!window.confirm(`${warn} "${it.name}" secara permanen? Data yang sudah tersimpan tetap ditampilkan memakai snapshot.`)) return;
+    const ok = await confirmDialog({ title: `${warn}?`, desc: `"${it.name}" dihapus permanen. Data tersimpan tetap memakai snapshot.`, confirmLabel: 'Hapus', danger: true });
+    if (!ok) return;
     if (isGuest || !supabaseReady) { setter((p) => p.filter((x) => x.id !== it.id)); return; }
     await supabase.from(table).delete().eq('id', it.id);
     setter((p) => p.filter((x) => x.id !== it.id));
@@ -325,26 +354,41 @@ export default function Admin() {
     if (ok) setScheduleModal(null);
   }
   async function delSchedule(s) {
-    if (!window.confirm(`Hapus jadwal ${DAYS[s.day_of_week]} ${timeRange(s.event_time, s.end_time)}? Histori yang sudah tersimpan tidak ikut berubah.`)) return;
+    const ok = await confirmDialog({ title: `Hapus jadwal ${DAYS[s.day_of_week]}?`, desc: `${timeRange(s.event_time, s.end_time)}. Histori tersimpan tidak ikut berubah.`, confirmLabel: 'Hapus', danger: true });
+    if (!ok) return;
     if (isGuest || !supabaseReady) { const ns = schedules.filter((x) => x.id !== s.id); setSchedules(ns); persistLocal({ schedules: ns }); }
     else { await supabase.from('recurring_schedules').delete().eq('id', s.id); setSchedules((p) => p.filter((x) => x.id !== s.id)); }
-  }
-  async function saveLock(v) {
-    setLockHours(v);
-    if (isGuest || !supabaseReady) persistLocal({ lockHours: v });
-    else await supabase.from('app_settings').upsert({ account_id: account.id, lock_duration_hours: v });
   }
 
   if (!account) return <div className="card"><Empty title="Perlu masuk" desc="Masuk untuk mengelola data." /></div>;
 
   const activeFilterCount = [fGender, fCat, fStatus, fActive, fAge].filter((v) => v !== 'all').length + (q.trim() ? 1 : 0);
-  function resetFilters() {
-    setQ('');
-    setFGender('all');
-    setFCat('all');
-    setFStatus('all');
-    setFActive('all');
-    setFAge('all');
+  function openFilterModal() {
+    setDQ(q);
+    setDFGender(fGender);
+    setDFCat(fCat);
+    setDFStatus(fStatus);
+    setDFActive(fActive);
+    setDFAge(fAge);
+    setShowFilterModal(true);
+  }
+  function resetDraftFilters() {
+    setDQ(DEFAULT_FILTERS.q);
+    setDFGender(DEFAULT_FILTERS.fGender);
+    setDFCat(DEFAULT_FILTERS.fCat);
+    setDFStatus(DEFAULT_FILTERS.fStatus);
+    setDFActive(DEFAULT_FILTERS.fActive);
+    setDFAge(DEFAULT_FILTERS.fAge);
+  }
+  function applyFilters() {
+    setQ(dQ);
+    setFGender(dFGender);
+    setFCat(dFCat);
+    setFStatus(dFStatus);
+    setFActive(dFActive);
+    setFAge(dFAge);
+    setPage(1);
+    setShowFilterModal(false);
   }
   function ageOf(birth) {
     if (!birth) return null;
@@ -377,6 +421,13 @@ export default function Admin() {
     }
     return true;
   });
+  const sortedMembers = [...filteredMembers].sort(compareMembers);
+  const totalPages = Math.max(1, Math.ceil(sortedMembers.length / perPage));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const startIdx = (safePage - 1) * perPage;
+  const pageRows = sortedMembers.slice(startIdx, startIdx + perPage);
+  const rangeStart = sortedMembers.length === 0 ? 0 : startIdx + 1;
+  const rangeEnd = Math.min(startIdx + perPage, sortedMembers.length);
 
   function devMember(...args) {
     if (import.meta.env.DEV) {
@@ -413,9 +464,10 @@ export default function Admin() {
     return null;
   }
 
-  function removeQr() {
+  async function removeQr() {
     if (!memberForm.qr) return;
-    if (!window.confirm('Hapus QR dari anggota ini? Data absensi historis tidak ikut dihapus.')) return;
+    const ok = await confirmDialog({ title: 'Hapus QR anggota?', desc: 'Hanya QR yang dihapus. Data absensi historis tetap aman.', confirmLabel: 'Hapus', danger: true });
+    if (!ok) return;
     setMemberForm((p) => ({ ...p, qr: '' }));
   }
 
@@ -485,60 +537,24 @@ export default function Admin() {
           <div className="admin-sub">
             <div className="admin-sub-head">
               <div><h3 className="card-title" style={{ fontSize: 15 }}>Data Anggota</h3><p className="card-desc" style={{ marginBottom: 0 }}>{members.filter((m) => m.active).length} aktif dari {members.length} anggota.</p></div>
-              <button className="btn btn-primary" style={{ minHeight: 40, padding: '8px 12px', fontSize: 13 }} onClick={() => { setMemberForm({ full_name: '', nickname: '', gender: 'MALE', status: '', category: '', birth_date: '', active: true, qr: '' }); setMemberModal('add'); }}><PlusIcon /> Tambah</button>
-            </div>
-            <input className="input search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Cari nama / nickname..." aria-label="Cari anggota" />
-          <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-            <button type="button" className="btn" style={{ minHeight: 40 }} onClick={() => setShowFilters((v) => !v)} aria-expanded={showFilters}>
-              Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
-            </button>
-            <button type="button" className="btn" style={{ minHeight: 40 }} disabled={activeFilterCount === 0} onClick={resetFilters}>Reset Filter</button>
-            <span className="hint" style={{ alignSelf: 'center' }}>{filteredMembers.length} dari {members.length} anggota</span>
-          </div>
-          {showFilters && (
-            <div className="row cols-2" style={{ marginBottom: 10 }}>
-              <div className="field" style={{ marginBottom: 0 }}><span>Gender</span>
-                <CustomSelect value={fGender} ariaLabel="Filter gender" placeholder="Semua Gender"
-                  options={[{ value: 'all', label: 'Semua Gender' }, { value: 'MALE', label: 'Laki-laki' }, { value: 'FEMALE', label: 'Perempuan' }]}
-                  onChange={setFGender} />
-              </div>
-              <div className="field" style={{ marginBottom: 0 }}><span>Kategori</span>
-                <CustomSelect value={fCat} ariaLabel="Filter kategori" placeholder="Semua Kategori"
-                  options={[{ value: 'all', label: 'Semua Kategori' }, ...MEMBER_CATEGORIES.map((c) => ({ value: c, label: c }))]}
-                  onChange={setFCat} />
-              </div>
-              <div className="field" style={{ marginBottom: 0 }}><span>Status</span>
-                <CustomSelect value={fStatus} ariaLabel="Filter status" placeholder="Semua Status"
-                  options={[{ value: 'all', label: 'Semua Status' }, { value: '__none', label: 'Belum ada status' }, ...statuses.map((s) => ({ value: s.name, label: s.name }))]}
-                  onChange={setFStatus} />
-              </div>
-              <div className="field" style={{ marginBottom: 0 }}><span>Keaktifan</span>
-                <CustomSelect value={fActive} ariaLabel="Filter keaktifan" placeholder="Semua"
-                  options={[{ value: 'all', label: 'Semua' }, { value: 'active', label: 'Aktif' }, { value: 'inactive', label: 'Tidak Aktif' }]}
-                  onChange={setFActive} />
-              </div>
-              <div className="field" style={{ marginBottom: 0 }}><span>Kelompok usia</span>
-                <CustomSelect value={fAge} ariaLabel="Filter kelompok usia" placeholder="Semua Usia"
-                  options={[
-                    { value: 'all', label: 'Semua Usia' },
-                    { value: 'lt13', label: 'Di bawah 13' },
-                    { value: 't13_17', label: '13–17 tahun' },
-                    { value: 't18_25', label: '18–25 tahun' },
-                    { value: 'gt25', label: 'Di atas 25' },
-                    { value: '__none', label: 'Tanpa tanggal lahir' },
-                  ]}
-                  onChange={setFAge} />
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button type="button" className="btn" style={{ minHeight: 40, padding: '8px 12px', fontSize: 13 }} onClick={openFilterModal} aria-haspopup="dialog">
+                  <FilterIcon /> Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+                </button>
+                <button className="btn btn-primary" style={{ minHeight: 40, padding: '8px 12px', fontSize: 13 }} onClick={() => { setMemberForm({ full_name: '', nickname: '', gender: 'MALE', status: '', category: '', birth_date: '', active: true, qr: '' }); setMemberModal('add'); }}><PlusIcon /> Tambah</button>
               </div>
             </div>
-          )}
-            {filteredMembers.length === 0 && <p className="hint">Belum ada anggota yang cocok.</p>}
-            {filteredMembers.length > 0 && (
+            {sortedMembers.length === 0 && (
+              <p className="hint">{members.length === 0 ? 'Belum ada anggota.' : 'Tidak ada anggota yang sesuai dengan filter.'}</p>
+            )}
+            {sortedMembers.length > 0 && (
               <div className="table-wrap">
                 <table className="att members-table">
-                  <thead><tr><th>Nama lengkap</th><th>Panggilan</th><th>Kategori</th><th>Gender</th><th>Status</th><th>Tgl lahir</th><th>Aktif</th><th><span className="hint">Aksi</span></th></tr></thead>
+                  <thead><tr><th>No</th><th>Nama lengkap</th><th>Panggilan</th><th>Kategori</th><th>Gender</th><th>Status</th><th>Tgl lahir</th><th>Aktif</th><th><span className="hint">Aksi</span></th></tr></thead>
                   <tbody>
-                    {filteredMembers.map((m) => (
+                    {pageRows.map((m, i) => (
                       <tr key={m.id} className={m.active ? '' : 'row-inactive'}>
+                        <td>{startIdx + i + 1}</td>
                         <td><strong>{m.full_name}</strong>{m.qr_identifier ? <span> <StatusBadge kind="info">QR</StatusBadge></span> : null}</td>
                         <td>{m.nickname || '-'}</td>
                         <td>{m.member_category || '-'}</td>
@@ -552,6 +568,91 @@ export default function Admin() {
                   </tbody>
                 </table>
               </div>
+            )}
+            {sortedMembers.length > 0 && (
+              <div className="pager-bar">
+                <span className="hint">Menampilkan {rangeStart}–{rangeEnd} dari {sortedMembers.length} anggota</span>
+                <label className="per-page"><span className="hint">Per halaman</span>
+                  <CustomSelect
+                    value={String(perPage)}
+                    ariaLabel="Jumlah data per halaman"
+                    placeholder="5"
+                    options={PER_PAGE_OPTS.map((n) => ({ value: String(n), label: String(n) }))}
+                    onChange={(v) => { setPerPage(Number(v)); setPage(1); }}
+                  />
+                </label>
+              </div>
+            )}
+            {totalPages > 1 && (
+              <nav className="pager-controls" aria-label="Navigasi halaman anggota">
+                <button type="button" className="page-btn" disabled={safePage <= 1} onClick={() => setPage(safePage - 1)} aria-label="Halaman sebelumnya">‹</button>
+                {pageItems(safePage, totalPages).map((n, i) => n === '…'
+                  ? <span key={`e${i}`} className="page-ellipsis" aria-hidden="true">…</span>
+                  : (
+                    <button
+                      key={n}
+                      type="button"
+                      className={`page-btn${n === safePage ? ' active' : ''}`}
+                      aria-label={`Halaman ${n}`}
+                      aria-current={n === safePage ? 'page' : undefined}
+                      onClick={() => setPage(n)}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                <button type="button" className="page-btn" disabled={safePage >= totalPages} onClick={() => setPage(safePage + 1)} aria-label="Halaman berikutnya">›</button>
+              </nav>
+            )}
+            {showFilterModal && (
+              <Modal
+                title="Filter Anggota"
+                onClose={() => setShowFilterModal(false)}
+                foot={(
+                  <>
+                    <button type="button" className="btn" onClick={() => setShowFilterModal(false)}>Batal</button>
+                    <button type="button" className="btn" onClick={resetDraftFilters}>Reset Filter</button>
+                    <button type="button" className="btn btn-primary" onClick={applyFilters}>Terapkan Filter</button>
+                  </>
+                )}
+              >
+                <label className="field"><span>Cari nama / nickname</span>
+                  <input className="input search" value={dQ} onChange={(e) => setDQ(e.target.value)} placeholder="Cari nama / nickname..." aria-label="Cari anggota" />
+                </label>
+                <div className="row cols-2">
+                  <div className="field" style={{ marginBottom: 0 }}><span>Gender</span>
+                    <CustomSelect value={dFGender} ariaLabel="Filter gender" placeholder="Semua Gender"
+                      options={[{ value: 'all', label: 'Semua Gender' }, { value: 'MALE', label: 'Laki-laki' }, { value: 'FEMALE', label: 'Perempuan' }]}
+                      onChange={setDFGender} />
+                  </div>
+                  <div className="field" style={{ marginBottom: 0 }}><span>Kategori</span>
+                    <CustomSelect value={dFCat} ariaLabel="Filter kategori" placeholder="Semua Kategori"
+                      options={[{ value: 'all', label: 'Semua Kategori' }, ...MEMBER_CATEGORIES.map((c) => ({ value: c, label: c }))]}
+                      onChange={setDFCat} />
+                  </div>
+                  <div className="field" style={{ marginBottom: 0 }}><span>Status</span>
+                    <CustomSelect value={dFStatus} ariaLabel="Filter status" placeholder="Semua Status"
+                      options={[{ value: 'all', label: 'Semua Status' }, { value: '__none', label: 'Belum ada status' }, ...statuses.map((s) => ({ value: s.name, label: s.name }))]}
+                      onChange={setDFStatus} />
+                  </div>
+                  <div className="field" style={{ marginBottom: 0 }}><span>Keaktifan</span>
+                    <CustomSelect value={dFActive} ariaLabel="Filter keaktifan" placeholder="Semua"
+                      options={[{ value: 'all', label: 'Semua' }, { value: 'active', label: 'Aktif' }, { value: 'inactive', label: 'Tidak Aktif' }]}
+                      onChange={setDFActive} />
+                  </div>
+                  <div className="field" style={{ marginBottom: 0 }}><span>Kelompok usia</span>
+                    <CustomSelect value={dFAge} ariaLabel="Filter kelompok usia" placeholder="Semua Usia"
+                      options={[
+                        { value: 'all', label: 'Semua Usia' },
+                        { value: 'lt13', label: 'Di bawah 13' },
+                        { value: 't13_17', label: '13–17 tahun' },
+                        { value: 't18_25', label: '18–25 tahun' },
+                        { value: 'gt25', label: 'Di atas 25' },
+                        { value: '__none', label: 'Tanpa tanggal lahir' },
+                      ]}
+                      onChange={setDFAge} />
+                  </div>
+                </div>
+              </Modal>
             )}
           </div>
           <div className="admin-grid" style={{ marginTop: 12 }}>
@@ -599,10 +700,6 @@ export default function Admin() {
                   </span>
                 </div>
               ))}
-              <label className="field" style={{ marginTop: 12, marginBottom: 0 }}>
-                <span>Batas perubahan absensi (jam, dihitung dari jam mulai jadwal)</span>
-                <input className="input" type="number" min="1" max="168" value={lockHours} onChange={(e) => saveLock(Number(e.target.value))} />
-              </label>
             </div>
             <Crud title="Jenis Izin" desc="Dipakai pada dropdown izin form absensi." items={absence}
               onAdd={(n) => addMaster('absence_types', setAbsence, n)}

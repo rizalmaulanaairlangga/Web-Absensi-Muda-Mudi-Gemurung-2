@@ -86,6 +86,30 @@ export function AppProvider({ children }) {
     setTimeout(() => setToasts((p) => p.filter((t) => t.id !== id)), 3200);
   }, []);
 
+  const [confirmReq, setConfirmReq] = useState(null);
+  const confirmResolveRef = useRef(null);
+  const confirmDialog = useCallback((opts = {}) => {
+    if (confirmResolveRef.current) {
+      try { confirmResolveRef.current(false); } catch { /* abaikan */ }
+      confirmResolveRef.current = null;
+    }
+    return new Promise((resolve) => {
+      confirmResolveRef.current = resolve;
+      setConfirmReq({
+        title: opts.title || 'Konfirmasi',
+        desc: opts.desc || '',
+        confirmLabel: opts.confirmLabel || 'Ya',
+        danger: !!opts.danger,
+      });
+    });
+  }, []);
+  const closeConfirm = useCallback((val) => {
+    setConfirmReq(null);
+    const r = confirmResolveRef.current;
+    confirmResolveRef.current = null;
+    if (r) r(val);
+  }, []);
+
   const setTheme = useCallback((mode) => {
     if (mode !== 'light' && mode !== 'dark') return;
     setThemeState(mode);
@@ -403,6 +427,7 @@ export function AppProvider({ children }) {
 
   const value = {
     theme, setTheme, toggleTheme, online, syncState, toasts, toast,
+    confirmDialog, confirmReq, closeConfirm,
     session, account, isGuest, loadingAuth,
     queue, pendingCount, conflicts, lastSyncAt,
     enqueue, trySync, retrySync, resolveConflict,

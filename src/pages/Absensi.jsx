@@ -5,8 +5,8 @@ import { createAttendanceOp, createHolidayOp, createCancelHolidayOp } from '../s
 import { loadMastersCache, saveMastersCache, ensureMasterLists } from '../lib/masters.js';
 import { SpecialEventModal, SpecialDetail } from '../components/SpecialEvent.jsx';
 import { supabase } from '../lib/supabaseClient.js';
-import { idbGet, idbSet } from '../lib/idb.js';
-import { todayJakarta, toISODate, formatID, dayName, dayOfWeek, isWithinWindow, windowOpenAt, canEdit, monthLabel, scheduleStatus } from '../lib/dates.js';
+import { idbGet, idbSet, idbDel } from '../lib/idb.js';
+import { todayJakarta, toISODate, formatID, dayName, dayOfWeek, isWithinWindow, windowOpenAt, monthLabel, scheduleStatus, MONTHS } from '../lib/dates.js';
 import { surahName } from '../lib/quran.js';
 import { DEFAULT_ABSENCE, DEFAULT_STATUS, DEFAULT_HADITH, DEFAULT_FREE, DEFAULT_SPECIAL_TYPES, DEFAULT_SPEAKERS, guestSeed } from '../lib/seed.js';
 import { Modal, Empty, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, ChevronDownIcon, ClockIcon, PlusIcon, CustomSelect, EyeIcon, RefreshIcon, TrashIcon, PencilIcon, MonthPicker, StatusBadge } from '../components/ui.jsx';
@@ -245,6 +245,7 @@ export default function Absensi() {
   const {
     account, isGuest, online, toast, enqueue, supabaseReady,
     saveSnapshot, loadSnapshot, conflicts, resolveConflict, pendingCount, lastSyncAt,
+    confirmDialog,
   } = useApp();
   const now = todayJakarta();
   const [tableYm, setTableYm] = useState({ y: now.getFullYear(), m: now.getMonth() + 1 });
@@ -288,6 +289,9 @@ export default function Absensi() {
   const [qrSaving, setQrSaving] = useState(false);
   const skipEditLoadRef = React.useRef(false);
   const [mat, setMat] = useState(() => MAT_EMPTY());
+  const [matSectionOpen, setMatSectionOpen] = useState(false);
+  const uiRestoreRef = React.useRef(null);
+  const [uiReady, setUiReady] = useState(false);
 
   async function ensureMasters(keys) {
     if (!account || isGuest || !supabaseReady) return;
@@ -302,6 +306,20 @@ export default function Absensi() {
   useEffect(() => {
     (async () => {
       if (!account) return;
+      try {
+        const ui = await idbGet(uiKeyFor(account.id), null);
+        if (ui) {
+          uiRestoreRef.current = ui;
+          if (ui.selectedKey) setSelectedKey(ui.selectedKey);
+          if (ui.editOcc) setEditOcc(ui.editOcc);
+          if (ui.editing) setEditing(true);
+          if (ui.matSectionOpen) setMatSectionOpen(true);
+          if (ui.specialId && !params.get('special') && !params.get('newSpecial')) {
+            setParams({ special: ui.specialId }, { replace: true });
+          }
+        }
+      } catch { /* abaikan, lanjut alur normal */ }
+      setUiReady(true);
       if (isGuest || !supabaseReady) {
         let local = await idbGet('guest-data', null);
         if (!local || local.accountId !== account.id) {
@@ -314,7 +332,7 @@ export default function Absensi() {
         setStore(local);
         const cands = formCandidates(local.schedules).map((c) => ({ ...c, id: `occ-${c.occurrence_date}-${c.recurring_schedule_id}` }));
         setFormOccs(cands);
-        if (!selectedKey) {
+        if (!selectedKey && !uiRestoreRef.current?.selectedKey) {
           const today = toISODate(todayJakarta());
           const upcoming = cands.find((o) => o.occurrence_date >= today) || cands[cands.length - 1];
           if (upcoming) setSelectedKey(upcoming.id);
@@ -325,6 +343,19 @@ export default function Absensi() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account?.id]);
+
+  useEffect(() => {
+    if (!account || !uiReady) return;
+    idbSet(uiKeyFor(account.id), {
+      selectedKey: selectedKey || null,
+      specialId: specialId || null,
+      editing: !!editing,
+      editOcc: editOcc || null,
+      matSectionOpen: !!matSectionOpen,
+      updatedAt: Date.now(),
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account?.id, uiReady, selectedKey, specialId, editing, editOcc, matSectionOpen]);
 
   function applySnapshot(snap, mcached) {
     if (!snap?.members?.length) return false;
@@ -344,7 +375,7 @@ export default function Absensi() {
       offline: typeof navigator !== 'undefined' && navigator.onLine === false,
     });
     setFormOccs(formList);
-    if (!selectedKey && formList.length) {
+    if (!selectedKey && !uiRestoreRef.current?.selectedKey && formList.length) {
       const today = toISODate(todayJakarta());
       const up = formList.find((o) => o.occurrence_date >= today) || formList[formList.length - 1];
       setSelectedKey(up.id);
@@ -467,7 +498,7 @@ export default function Absensi() {
       };
       setStore(s);
       setFormOccs(formList);
-      if (!selectedKey && formList.length) {
+      if (!selectedKey && !uiRestoreRef.current?.selectedKey && formList.length) {
         const today = toISODate(todayJakarta());
         const up = formList.find((o) => o.occurrence_date >= today) || formList[formList.length - 1];
         setSelectedKey(up.id);
@@ -630,16 +661,19 @@ export default function Absensi() {
         devEdit('nasehat records:', rows.some((r) => r.kind === 'NASEHAT') ? 'ada' : 'kosong');
         devEdit('free activity records:', rows.some((r) => r.kind === 'FREE') ? 'ada' : 'kosong');
         setMat(rows.length ? serverMatsToForm(rows) : MAT_EMPTY());
+        if (rows.length) setMatSectionOpen(true);
         await idbSet(`mats-${account.id}-${o.id}`, rows);
       } catch {
         const cached = await readCachedMats([o.id, o.localKey]);
         devEdit('materials (cache offline):', cached ? `${cached.length} baris` : 'kosong');
         setMat(cached ? serverMatsToForm(cached) : MAT_EMPTY());
+        if (cached?.length) setMatSectionOpen(true);
       }
     } else {
       const cached = await readCachedMats([o.id, o.localKey, occKeyOf(o)]);
       devEdit('materials (cache lokal):', cached ? `${cached.length} baris` : 'kosong');
       setMat(cached ? serverMatsToForm(cached) : MAT_EMPTY());
+      if (cached?.length) setMatSectionOpen(true);
     }
   }
 
@@ -649,6 +683,15 @@ export default function Absensi() {
     (async () => {
       if (editing) {
         if (!skipEditLoadRef.current) {
+          const dk = draftKeyFor(account.id, 'rutin', key);
+          const d = await idbGet(dk, null).catch(() => null);
+          if (d && d.mode === 'edit' && (Object.keys(d.answers || {}).length || matHasContent(d.mat))) {
+            if (d.answers) setAnswers(d.answers);
+            if (d.mat) {
+              setMat(d.mat);
+              if (matHasContent(d.mat)) setMatSectionOpen(true);
+            }
+          } else {
           const saved = key ? store.attendance?.[key] : null;
           if (saved?.length) {
             const map = {};
@@ -666,11 +709,19 @@ export default function Absensi() {
             } catch { /* abaikan, gunakan state lokal */ }
           }
           await hydrateEditMats(occ);
+          }
         } else {
           skipEditLoadRef.current = false;
         }
       } else if (!submitted && key) {
-        idbGet(`draft-${account.id}-${key}`, null).then((d) => { if (d?.answers) setAnswers(d.answers); });
+        const d = await idbGet(draftKeyFor(account.id, 'rutin', key), null).catch(() => null);
+        if (d && d.mode !== 'edit' && (Object.keys(d.answers || {}).length || matHasContent(d.mat))) {
+          if (d.answers) setAnswers(d.answers);
+          if (d.mat) {
+            setMat(d.mat);
+            if (matHasContent(d.mat)) setMatSectionOpen(true);
+          }
+        }
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -678,9 +729,14 @@ export default function Absensi() {
 
   useEffect(() => {
     if (!occ || !account || !attendanceKey) return;
-    if (!submitted && !editing) idbSet(`draft-${account.id}-${attendanceKey}`, { answers, mat });
+    const dk = draftKeyFor(account.id, 'rutin', attendanceKey);
+    if (!Object.keys(answers).length && !matHasContent(mat)) {
+      idbDel(dk).catch(() => {});
+      return;
+    }
+    idbSet(dk, { answers, mat, mode: editing ? 'edit' : 'new', kind: 'rutin', id: attendanceKey, updatedAt: Date.now() }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [answers, mat]);
+  }, [answers, mat, editing, occ?.id, account?.id]);
 
   useEffect(() => {
     if (showEditPicker) loadEditLists();
@@ -701,11 +757,16 @@ export default function Absensi() {
     return m.nickname || m.full_name;
   }
 
+  function shortID(dateStr) {
+    const d = new Date(`${dateStr}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return dateStr;
+    return `${dayName(dateStr)}, ${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  }
+
   function openQrScan() {
     if (!occ) return;
     if (submitted && !editing) { toast('Tekan Edit Absensi Ini untuk mengubah kehadiran.'); return; }
-    if (!windowOpen) { toast(`Absensi belum dapat diisi. Baru dapat diisi mulai pukul ${windowOpenAt(occ.occurrence_time)}, yaitu 30 menit sebelum acara dimulai.`); return; }
-    if (!editable) { toast('Absensi ini tidak dapat diubah lagi. Batas waktu perubahan telah berakhir.'); return; }
+    if (!windowOpen && !editing) { toast(`Absensi dibuka pukul ${windowOpenAt(occ.occurrence_time).replace(':', '.')} (30 menit sebelum acara).`); return; }
     setQrResult(null);
     setQrScanKey((k) => k + 1);
     setQrScanOpen(true);
@@ -779,6 +840,7 @@ export default function Absensi() {
         }
       }
       setHadir(member.id, true);
+      try { await idbDel(draftKeyFor(account.id, 'rutin', key)); } catch { /* abaikan */ }
       if (!editing) { skipEditLoadRef.current = true; setEditing(true); }
       return 'saved';
     } catch {
@@ -827,7 +889,6 @@ export default function Absensi() {
   }
 
   const windowOpen = occ ? isWithinWindow(occ.occurrence_date, occ.occurrence_time) : false;
-  const editable = occ ? canEdit(occ.occurrence_date, occ.occurrence_time, store?.lockHours ?? 24) : true;
   const surah = surahName(mat.surah);
   const matEmpty = !mat.quran && !mat.hadith && !mat.nasehat && !mat.free;
 
@@ -838,6 +899,42 @@ export default function Absensi() {
     if (mat.nasehat && mat.nasehatBy) arr.push({ clientId: clientId('m'), kind: 'NASEHAT', speaker: mat.nasehatBy });
     if (mat.free && mat.freeId) arr.push({ clientId: clientId('m'), kind: 'FREE', activity: mat.freeId, speaker: mat.freeBy || null });
     return arr;
+  }
+
+  const draftKeyFor = (aid, kind, id) => `draft-${aid}-${kind}-${id}`;
+  const uiKeyFor = (aid) => `absensi-ui-${aid}`;
+
+  function matHasContent(m) {
+    if (!m) return false;
+    return Boolean(m.quran || m.hadith || m.nasehat || m.free
+      || m.surah || m.ayat || m.pemateriQ || m.hadithId || m.halaman
+      || m.pemateriH || m.nasehatBy || m.freeId || m.freeBy);
+  }
+
+  async function clearPersistedSpecial() {
+    if (!account) return;
+    try {
+      const ui = await idbGet(uiKeyFor(account.id), null);
+      if (ui) await idbSet(uiKeyFor(account.id), { ...ui, specialId: null, updatedAt: Date.now() });
+    } catch { /* abaikan */ }
+  }
+
+  async function switchOcc(v) {
+    if (account && attendanceKey) {
+      try {
+        if (Object.keys(answers).length || matHasContent(mat)) {
+          await idbSet(draftKeyFor(account.id, 'rutin', attendanceKey), {
+            answers, mat, mode: editing ? 'edit' : 'new', kind: 'rutin', id: attendanceKey, updatedAt: Date.now(),
+          });
+        }
+      } catch { /* abaikan */ }
+    }
+    setSelectedKey(v);
+    setEditOcc(null);
+    setEditing(false);
+    setAnswers({});
+    setMat(MAT_EMPTY());
+    setMatSectionOpen(false);
   }
 
   function occDescriptor() {
@@ -992,9 +1089,12 @@ export default function Absensi() {
             await refreshAfterHoliday();
             return;
           }
-          if ((cur.reason ?? null) !== (loadedReason ?? null) && !window.confirm('Alasan di server sudah berubah. Timpa dengan alasan Anda?')) {
-            setHolidayEditBusy(false);
-            return;
+          if ((cur.reason ?? null) !== (loadedReason ?? null)) {
+            const ok = await confirmDialog({ title: 'Timpa alasan libur?', desc: 'Alasan di server sudah berubah. Timpa dengan alasan Anda?', confirmLabel: 'Timpa' });
+            if (!ok) {
+              setHolidayEditBusy(false);
+              return;
+            }
           }
           const { error } = await withTimeout(supabase.from('holidays').update({ reason: clean }).eq('account_id', account.id).eq('occurrence_id', occurrenceId), 15000);
           if (error) throw error;
@@ -1064,9 +1164,11 @@ export default function Absensi() {
 
   async function onSave() {
     if (!occ) return;
-    if (!windowOpen) { toast(`Absensi belum dapat diisi. Baru dapat diisi mulai pukul ${windowOpenAt(occ.occurrence_time)}, yaitu 30 menit sebelum acara dimulai.`); return; }
-    if (!editable) { toast('Absensi ini tidak dapat diubah lagi. Batas waktu perubahan telah berakhir.'); return; }
-    if (matEmpty && !window.confirm('Materi pengajian belum diisi. Absensi tetap dapat disimpan tanpa materi. Lanjutkan menyimpan?')) return;
+    if (!windowOpen && !editing) { toast(`Absensi dibuka pukul ${windowOpenAt(occ.occurrence_time).replace(':', '.')} (30 menit sebelum acara).`); return; }
+    if (matEmpty) {
+      const ok = await confirmDialog({ title: 'Simpan tanpa materi?', desc: 'Materi pengajian belum diisi. Absensi tetap dapat disimpan tanpa materi.', confirmLabel: 'Simpan' });
+      if (!ok) return;
+    }
     if (mat.quran && (!mat.surah || Number(mat.surah) < 1 || Number(mat.surah) > 114 || !mat.ayat)) { toast('Isi nomor surat 1-114 dan ayat jika Al-Quran aktif.'); return; }
     setSaving(true);
     try {
@@ -1149,6 +1251,9 @@ export default function Absensi() {
         }
       }
       if (isGuest || !supabaseReady) toast(`Absensi ${formatID(occ.occurrence_date)} berhasil disimpan.`);
+      try { await idbDel(draftKeyFor(account.id, 'rutin', attendanceKey)); } catch { /* abaikan */ }
+      setAnswers({});
+      setMat(MAT_EMPTY());
       setEditing(false);
     } catch { toast('Data gagal disimpan. Periksa koneksi internet dan coba lagi.'); }
     setSaving(false);
@@ -1195,7 +1300,7 @@ export default function Absensi() {
             <span>{open ? 'Sembunyikan' : 'Tampilkan'}</span>
           </button>
         </div>
-        {!open && <p className="hint" style={{ margin: 0 }}>Bagian disembunyikan. Data yang sudah diisi tetap tersimpan.</p>}
+        {!open && <p className="hint" style={{ margin: 0 }}>Disembunyikan. Isian tetap tersimpan.</p>}
         {open && list.length === 0 && <p className="hint">Belum ada anggota.</p>}
         {open && list.length > 0 && (
           <div className="member-rows">
@@ -1311,14 +1416,25 @@ export default function Absensi() {
     );
   }
 
-  function deactivateSection(key, title) {
-    if (sectionHasData(key) && !window.confirm(`Hapus materi ${title} dari pengajian ini? Isian yang sudah ada akan dibuang.`)) return;
+  async function deactivateSection(key, title) {
+    if (sectionHasData(key)) {
+      const ok = await confirmDialog({ title: `Hapus materi ${title}?`, desc: 'Isian yang sudah ada akan dibuang.', confirmLabel: 'Hapus', danger: true });
+      if (!ok) return;
+    }
     const clear = { quran: { surah: '', ayat: '', pemateriQ: '' }, hadith: { hadithId: '', halaman: '', pemateriH: '' }, nasehat: { nasehatBy: '' }, free: { freeId: '', freeBy: '' } }[key] || {};
     setMat((p) => ({ ...p, [key]: false, ...clear }));
   }
 
   function resetMaterials() {
     setMat(MAT_EMPTY());
+  }
+
+  async function resetForm() {
+    const ok = await confirmDialog({ title: 'Hapus draft absensi?', desc: 'Isian yang belum disimpan akan dihapus.', confirmLabel: 'Hapus draft', danger: true });
+    if (!ok) return;
+    setAnswers({});
+    resetMaterials();
+    setMatSectionOpen(false);
   }
 
   async function onSpecialCreated(id, localEv) {
@@ -1419,7 +1535,7 @@ export default function Absensi() {
           localEvent={localSpecials[specialId]}
           members={store.members}
           absenceTypes={store.absenceTypes}
-          onBack={() => setParams({})}
+          onBack={() => { clearPersistedSpecial(); setParams({}); }}
           onChanged={() => {}}
         />
       ) : (
@@ -1453,29 +1569,29 @@ export default function Absensi() {
                 label: `${formatID(o.occurrence_date)} • ${timeRange(o.occurrence_time, o.occurrence_end_time)}${store.attendance?.[key]?.length ? ' • Sudah diisi' : ''}${store.holidays?.[key] ? ' • Libur' : ''}`,
               };
             })}
-            onChange={(v) => { setSelectedKey(v); setEditOcc(null); setEditing(false); setAnswers({}); }}
+            onChange={(v) => switchOcc(v)}
           />
         </label>
 
-        {!hasScheduleToday && <div className="banner warn"><span>Hari ini masih hari {['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'][todayDow]}. Pengajian berikutnya mengikuti jadwal rutin yang tersedia.</span></div>}
-        {prevUnfilled && <div className="banner warn"><span>Jadwal pengajian {formatID(prevUnfilled.occurrence_date)} belum diisi absensinya.</span></div>}
-        {occ && !windowOpen && <div className="banner warn"><span>Absensi tersedia mulai {windowOpenAt(occ.occurrence_time)}. Absensi untuk jadwal ini baru dapat diisi mulai 30 menit sebelum acara dimulai.</span></div>}
+        {!hasScheduleToday && <div className="banner warn"><span>Hari ini {['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'][todayDow]}. Jadwal berikutnya mengikuti jadwal rutin.</span></div>}
+        {prevUnfilled && <div className="banner warn"><span>Absensi {shortID(prevUnfilled.occurrence_date)} belum diisi.</span></div>}
+        {occ && !windowOpen && !editing && <div className="banner warn"><span>Absensi dibuka pukul {windowOpenAt(occ.occurrence_time).replace(':', '.')} (30 menit sebelum acara).</span></div>}
         {occ && windowOpen && <div className="banner success"><span>Absensi tersedia.</span></div>}
 
         {submitted && !editing ? (
           <div className="banner success"><span>Absensi berhasil disimpan.</span>
             <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-              {editable && <button className="btn" onClick={() => setEditing(true)}>Edit Absensi Ini</button>}
+              {<button className="btn" onClick={() => setEditing(true)}>Edit Absensi Ini</button>}
             </span>
           </div>
         ) : (
           <>
             <div className="legend" aria-label="Keterangan">
-              <span className="lg"><span className="mark hadir">✓</span> Centang = Hadir</span>
-              <span className="lg"><span className="mark izin">I</span> Dropdown izin = Izin</span>
-              <span className="lg"><span className="mark alpha">A</span> Tombol A = Alpha</span>
-              <span className="lg">Kosong = belum diisi, dihitung Alpha saat simpan</span>
+              <span className="lg"><span className="mark hadir">✓</span> Centang untuk Hadir</span>
+              <span className="lg"><span className="mark izin">I</span> Pilih alasan untuk Izin</span>
+              <span className="lg"><span className="mark alpha">A</span> Alpha</span>
             </div>
+            <p className="hint" style={{ marginTop: -6 }}>Kosong dihitung Alpha saat simpan.</p>
             {qrScanOpen && (
               <QrScanner
                 key={qrScanKey}
@@ -1491,6 +1607,10 @@ export default function Absensi() {
               {renderGroup('PEREMPUAN', 'female', females, femaleOpen, setFemaleOpen)}
             </div>
 
+            {!matSectionOpen ? (
+              <button type="button" className="btn btn-block" style={{ marginTop: 14 }} onClick={() => setMatSectionOpen(true)}><PlusIcon /> Tambah Materi</button>
+            ) : (
+            <>
             <div className="material-group">
               <div className="material-group-head">
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1523,11 +1643,14 @@ export default function Absensi() {
                 </section>
               ))}
             </div>
+            <button type="button" className="btn btn-block" style={{ marginTop: 10 }} onClick={() => setMatSectionOpen(false)}>Tutup Materi</button>
+            </>
+            )}
 
 
             <div className="actions">
-              <button className="btn btn-danger" onClick={() => { if (window.confirm('Hapus draf absensi ini? Semua jawaban sementara dan isian materi pada form jadwal ini akan dihapus dan tidak bisa dikembalikan.')) { setAnswers({}); resetMaterials(); } }}>Reset Form</button>
-              <button className="btn btn-primary" disabled={saving || !windowOpen} onClick={onSave}>{saving ? 'Menyimpan...' : editing ? 'Simpan Perubahan' : 'Simpan Absensi'}</button>
+              <button className="btn btn-danger" onClick={resetForm}>Reset Form</button>
+              <button className="btn btn-primary" disabled={saving || (!windowOpen && !editing)} onClick={onSave}>{saving ? 'Menyimpan...' : editing ? 'Simpan Perubahan' : 'Simpan Absensi'}</button>
             </div>
             {editing && <div style={{ display: 'flex', gap: 8, marginTop: 10 }}><button className="btn" onClick={() => setEditing(false)}>Batal</button></div>}
           </>

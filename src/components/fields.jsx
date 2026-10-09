@@ -1,7 +1,7 @@
 import React from 'react';
 import { CalendarIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon } from './ui.jsx';
 import { AnchoredPopover } from './popover.jsx';
-import { MONTHS } from '../lib/dates.js';
+import { MONTHS, todayJakarta } from '../lib/dates.js';
 
 const WEEKDAYS = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
 
@@ -54,23 +54,22 @@ export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeh
   }
   const [level, setLevel] = React.useState('dates');
   const [panelYear, setPanelYear] = React.useState(view.y);
-  const [yearBase, setYearBase] = React.useState(() => Math.floor(view.y / 12) * 12);
-  function openMonths() {
-    setPanelYear(view.y);
-    setLevel('months');
-  }
+  const currentYear = React.useMemo(() => todayJakarta().getFullYear(), []);
+  const years = React.useMemo(() => Array.from({ length: 51 }, (_, i) => currentYear - i), [currentYear]);
+  const minYear = currentYear - 50;
+  const selYear = panelYear > currentYear || panelYear < minYear ? null : panelYear;
+  const yearListRef = React.useRef(null);
   function openYears() {
-    setYearBase(Math.floor(panelYear / 12) * 12);
+    setPanelYear(view.y);
     setLevel('years');
   }
-  function shiftYears(delta) {
-    setYearBase((b) => Math.min(2088, Math.max(1900, b + delta)));
-  }
-  function shiftPanelYear(delta) {
-    const next = Math.min(2099, Math.max(1900, panelYear + delta));
-    setPanelYear(next);
-    setYearBase(Math.floor(next / 12) * 12);
-  }
+  React.useEffect(() => {
+    if (level !== 'years' || !open) return;
+    const box = yearListRef.current;
+    if (!box) return;
+    const sel = box.querySelector('.yr-item.selected') || box.querySelector('.yr-item');
+    try { sel?.scrollIntoView?.({ block: 'nearest' }); } catch { /* abaikan */ }
+  }, [level, open]);
   function onGridKey(e) {
     const scope = e.currentTarget?.closest?.('.field-pop') || document;
     const btns = [...scope.querySelectorAll('.date-day')];
@@ -95,6 +94,18 @@ export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeh
     else if (e.key === 'ArrowLeft') next = idx - 1;
     else if (e.key === 'ArrowDown') next = idx + 3;
     else if (e.key === 'ArrowUp') next = idx - 3;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = btns.length - 1;
+    if (next !== null && btns[next]) { e.preventDefault(); btns[next].focus(); }
+  }
+  function onYearKey(e) {
+    const scope = e.currentTarget?.closest?.('.field-pop') || document;
+    const btns = [...scope.querySelectorAll('.yr-item')];
+    const idx = btns.indexOf(document.activeElement);
+    if (idx < 0) return;
+    let next = null;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = idx + 1;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = idx - 1;
     else if (e.key === 'Home') next = 0;
     else if (e.key === 'End') next = btns.length - 1;
     if (next !== null && btns[next]) { e.preventDefault(); btns[next].focus(); }
@@ -127,9 +138,9 @@ export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeh
               <button
                 type="button"
                 className="date-title-btn"
-                aria-label="Pilih bulan"
-                title="Pilih bulan"
-                onClick={openMonths}
+                aria-label="Pilih tahun"
+                title="Pilih tahun"
+                onClick={openYears}
               >
                 {MONTHS[view.m - 1]} {view.y}
               </button>
@@ -138,32 +149,32 @@ export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeh
           )}
           {level === 'months' && (
             <>
-              <button type="button" className="icon-btn" aria-label="Tahun sebelumnya" onClick={() => shiftPanelYear(-1)}><ChevronLeftIcon /></button>
+              <span aria-hidden="true" style={{ width: 40 }} />
               <button
                 type="button"
                 className="date-title-btn"
-                aria-label="Pilih tahun"
-                title="Pilih tahun"
-                onClick={openYears}
+                aria-label="Kembali ke pilihan tahun"
+                title="Kembali ke pilihan tahun"
+                onClick={() => setLevel('years')}
               >
                 {panelYear}
               </button>
-              <button type="button" className="icon-btn" aria-label="Tahun berikutnya" onClick={() => shiftPanelYear(1)}><ChevronRightIcon /></button>
+              <span aria-hidden="true" style={{ width: 40 }} />
             </>
           )}
           {level === 'years' && (
             <>
-              <button type="button" className="icon-btn" aria-label="12 tahun sebelumnya" onClick={() => shiftYears(-12)}><ChevronLeftIcon /></button>
+              <span aria-hidden="true" style={{ width: 40 }} />
               <button
                 type="button"
                 className="date-title-btn"
-                aria-label="Kembali ke pilihan bulan"
-                title="Kembali ke pilihan bulan"
-                onClick={() => setLevel('months')}
+                aria-label="Kembali ke kalender tanggal"
+                title="Kembali ke kalender tanggal"
+                onClick={() => setLevel('dates')}
               >
-                {yearBase} – {yearBase + 11}
+                Pilih Tahun
               </button>
-              <button type="button" className="icon-btn" aria-label="12 tahun berikutnya" onClick={() => shiftYears(12)}><ChevronRightIcon /></button>
+              <span aria-hidden="true" style={{ width: 40 }} />
             </>
           )}
         </div>
@@ -184,13 +195,15 @@ export function DateField({ value, onChange, ariaLabel = 'Pilih tanggal', placeh
           </div>
         )}
         {level === 'years' && (
-          <div className="mpick-grid" onKeyDown={(e) => onPickKey(e, '.my-year')}>
-            {Array.from({ length: 12 }, (_, i) => yearBase + i).map((y) => (
+          <div ref={yearListRef} className="year-list" role="listbox" aria-label="Pilih tahun" onKeyDown={onYearKey}>
+            {years.map((y) => (
               <button
                 key={y}
                 type="button"
-                className={`mp-month my-year${y === panelYear ? ' selected' : ''}`}
-                aria-pressed={y === panelYear}
+                role="option"
+                aria-selected={y === selYear}
+                className={`yr-item${y === selYear ? ' selected' : ''}`}
+                autoFocus={y === selYear}
                 aria-label={`Tahun ${y}`}
                 onClick={() => { setPanelYear(y); setLevel('months'); }}
               >

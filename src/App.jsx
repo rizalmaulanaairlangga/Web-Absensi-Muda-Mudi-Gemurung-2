@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Routes, Route, useNavigate, Navigate, useLocation } from 'react-router-dom';
 import { AppProvider, useApp } from './lib/store.jsx';
-import { BottomNav, SunIcon, MoonIcon, UserIcon, LogoutIcon } from './components/ui.jsx';
+import { BottomNav, SunIcon, MoonIcon, UserIcon, LogoutIcon, Modal } from './components/ui.jsx';
 import Login from './pages/Login.jsx';
 import Absensi from './pages/Absensi.jsx';
 import Laporan from './pages/Laporan.jsx';
@@ -28,7 +28,7 @@ function ThemeToggle() {
 }
 
 function AccountMenu() {
-  const { account, isGuest, session, logout } = useApp();
+  const { account, isGuest, session, logout, confirmDialog } = useApp();
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const nav = useNavigate();
@@ -69,7 +69,10 @@ function AccountMenu() {
             className="account-logout"
             role="menuitem"
             onClick={async () => {
-              if (isGuest && !window.confirm('Keluar dan hapus data demo?')) return;
+              if (isGuest) {
+                const ok = await confirmDialog({ title: 'Keluar dan hapus data demo?', desc: 'Data demo di perangkat ini akan dihapus dan tidak bisa dikembalikan.', confirmLabel: 'Keluar', danger: true });
+                if (!ok) return;
+              }
               setOpen(false);
               await logout();
               nav('/login');
@@ -130,6 +133,41 @@ function Toasts() {
   return <div className="toast-wrap" aria-live="polite">{toasts.map((t) => <div className="toast" key={t.id}>{t.msg}</div>)}</div>;
 }
 
+function ConfirmHost() {
+  const { confirmReq, closeConfirm } = useApp();
+  const prevFocus = useRef(null);
+  useEffect(() => {
+    if (confirmReq) {
+      prevFocus.current = document.activeElement;
+    } else if (prevFocus.current && prevFocus.current.focus) {
+      try { prevFocus.current.focus({ preventScroll: true }); } catch { /* abaikan */ }
+      prevFocus.current = null;
+    }
+  }, [confirmReq]);
+  if (!confirmReq) return null;
+  return (
+    <Modal
+      title={confirmReq.title}
+      onClose={() => closeConfirm(false)}
+      foot={(
+        <>
+          <button type="button" className="btn" autoFocus={confirmReq.danger} onClick={() => closeConfirm(false)}>Batal</button>
+          <button
+            type="button"
+            className={confirmReq.danger ? 'btn btn-danger' : 'btn btn-primary'}
+            autoFocus={!confirmReq.danger}
+            onClick={() => closeConfirm(true)}
+          >
+            {confirmReq.confirmLabel}
+          </button>
+        </>
+      )}
+    >
+      {confirmReq.desc ? <p className="card-desc" style={{ marginBottom: 0 }}>{confirmReq.desc}</p> : null}
+    </Modal>
+  );
+}
+
 function Splash() {
   return (
     <div className="splash" role="status" aria-label="Memeriksa sesi">
@@ -170,6 +208,7 @@ function Shell() {
           </Routes>
         </main>
         <Toasts />
+        <ConfirmHost />
       </div>
     );
   }
@@ -195,6 +234,7 @@ function Shell() {
       </main>
       <BottomNav />
       <Toasts />
+      <ConfirmHost />
     </div>
   );
 }
